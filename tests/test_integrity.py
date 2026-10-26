@@ -1,8 +1,8 @@
 import json
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from fukua_rpa.integrity import (
     PAYLOAD_MANIFEST_NAME,
@@ -51,6 +51,23 @@ class PayloadIntegrityTests(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn("injected.dll", report["suspicious_unexpected"])
 
+    def test_common_windows_executable_suffixes_fail_integrity_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.create_release(root)
+            # .pyw（pythonw 关联双击即可执行）与 .chm（内嵌可执行 HTML）同属
+            # 清单外可执行内容，必须与 .py/.pyd 同等阻断（SEC-FR-002）。
+            for suffix in (".com", ".cmd", ".scr", ".ps1", ".lnk", ".pyw", ".chm"):
+                candidate = root / f"unexpected{suffix}"
+                candidate.write_bytes(b"unexpected")
+                with self.subTest(suffix=suffix):
+                    report = verify_payload(root)
+                    self.assertFalse(report["ok"])
+                    self.assertIn(
+                        candidate.name, report["suspicious_unexpected"]
+                    )
+                candidate.unlink()
+
     def test_unsafe_manifest_path_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -81,6 +98,20 @@ class PayloadIntegrityTests(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn("条目格式", report["error"])
 
+    def test_duplicate_manifest_fields_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / PAYLOAD_MANIFEST_NAME).write_text(
+                '{"format":"fukuaRPA_payload_hashes",'
+                '"format":"fukuaRPA_payload_hashes","files":[]}',
+                encoding="utf-8",
+            )
+
+            report = verify_payload(root)
+
+            self.assertFalse(report["ok"])
+            self.assertIn("重复字段", report["error"])
+
     def test_actual_directory_scan_is_bounded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -92,6 +123,19 @@ class PayloadIntegrityTests(unittest.TestCase):
 
             self.assertFalse(report["ok"])
             self.assertIn("文件数量超过上限", report["error"])
+
+    def test_non_object_manifest_returns_failure_instead_of_raising(self):
+        """P3 regression: a manifest that is valid JSON but not an object
+        (e.g. [] or null) must return a failure report, not raise AttributeError."""
+        for content in ("[]", "null", "0", '"string"'):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                (root / PAYLOAD_MANIFEST_NAME).write_text(
+                    content, encoding="utf-8"
+                )
+                report = verify_payload(root)
+                self.assertFalse(report["ok"])
+                self.assertIn("清单根结构必须是对象", report["error"])
 
 
 if __name__ == "__main__":

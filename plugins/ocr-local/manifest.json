@@ -1,0 +1,219 @@
+{
+  "format": "fukuaRPA.plugin",
+  "manifest_version": 1,
+  "id": "ocr-local",
+  "name": "本地 OCR（离线文字识别）",
+  "version": "1.1.0",
+  "author": "fukuaRPA 社区插件",
+  "plugin_type": "python_action",
+  "_note_p2": "P2 阶段：当前为 Python 实现（python_action），非 WASM 沙箱",
+  "api_version": 1,
+  "min_app_version": "1.0.0",
+  "entrypoint": "src/ocr_local/action.py:run",
+  "permissions": [
+    "screen.capture_region",
+    "input.mouse",
+    "variables.write_declared"
+  ],
+  "dependencies": [],
+  "templates": [],
+  "actions": [
+    {
+      "id": "ocr_find_click",
+      "name": "OCR 识别文字并点击",
+      "description": "对指定区域做离线文字识别，找到目标文本后返回其区域局部坐标（由宿主叠加区域原点得到屏幕坐标），由宿主通过 input.mouse 权限执行点击（保证可被急停取消、停止后不残留输入）。",
+      "permissions": [
+        "screen.capture_region",
+        "input.mouse",
+        "variables.write_declared"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target_text": {
+            "type": "string",
+            "title": "查找文字",
+            "description": "要找的文本，命中后点击其位置"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "候选文字列表",
+            "description": "多候选时按列表顺序取第一个命中"
+          },
+          "match_mode": {
+            "type": "string",
+            "enum": [
+              "contains",
+              "equals",
+              "regex"
+            ],
+            "default": "contains",
+            "title": "匹配方式"
+          },
+          "score_threshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.5,
+            "title": "置信度阈值"
+          },
+          "click_offset": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "default": [
+              0.5,
+              0.5
+            ],
+            "title": "点击偏移(包围盒内比例)"
+          },
+          "set_variable": {
+            "type": "string",
+            "title": "写入变量",
+            "description": "把命中的文字写入声明过的变量"
+          },
+          "image_path": {
+            "type": "string",
+            "title": "图片路径(独立模式)"
+          },
+          "image_b64": {
+            "type": "string",
+            "title": "Base64图片(P3宿主注入)"
+          },
+          "region_origin": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "title": "区域屏幕原点[x, y]",
+            "description": "P3 宿主注入：区域截图在屏幕上的左上角坐标；提供后 click_x/click_y 叠加为绝对屏幕坐标"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "matched_text": {
+            "type": "string"
+          },
+          "click_x": {
+            "type": "number",
+            "description": "区域局部 X 坐标（需宿主叠加区域原点）"
+          },
+          "click_y": {
+            "type": "number",
+            "description": "区域局部 Y 坐标（需宿主叠加区域原点）"
+          },
+          "coordinate_space": {
+            "type": "string",
+            "description": "absolute（已叠加区域原点）或 local（区域局部坐标，宿主须叠加）"
+          },
+          "score": {
+            "type": "number"
+          },
+          "variable_value": {
+            "type": "string"
+          },
+          "words": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "id": "ocr_read_region",
+      "name": "OCR 读取区域文字",
+      "description": "对指定区域做离线文字识别，返回全部识别到的文本与坐标，不点击。",
+      "permissions": [
+        "screen.capture_region"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "score_threshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.5,
+            "title": "置信度阈值"
+          },
+          "image_path": {
+            "type": "string",
+            "title": "图片路径(独立模式)"
+          },
+          "image_b64": {
+            "type": "string",
+            "title": "Base64图片(P3宿主注入)"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "words": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "490b9ac21b0a3aba1f6e56ba0e1427a6c0c989f80ba2f2d3851ce40be68e904a"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "c50fe75a0d3a0e1597bb67785d2ed20c6bcf80d7f6589e5fcb167a696d318cf1"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "06ecbd6ddb344e22fd6e6ad1d2ca390f6f3c8be1ba0c57588cfc6afa2653e8fb"
+    },
+    {
+      "path": "src/ocr_local/__init__.py",
+      "sha256": "92f3ae92a38a4e59b35f99a8ca1b44417ea6d84019099b5a1aaa26a2f9df0dc1"
+    },
+    {
+      "path": "src/ocr_local/action.py",
+      "sha256": "326d4c524e6689fa1b26bc194ddc4cbedc5573c8b8d71ad14c1ccb85572510b5"
+    },
+    {
+      "path": "src/ocr_local/backend.py",
+      "sha256": "1becadd68aa25b97cabb485902cdf3908a0b8ec4b440964c2a41c7b7bb755e6e"
+    },
+    {
+      "path": "src/ocr_local/engine.py",
+      "sha256": "cfeadb45b46f122abb95f608f63825715f1962d13709ef3b0f445893cc8153e4"
+    },
+    {
+      "path": "src/ocr_local/io_image.py",
+      "sha256": "f83fa1208aef9051cbc6da3bdfe0921725db7a06f5373b16ccc44baa70d55874"
+    },
+    {
+      "path": "src/ocr_local/matcher.py",
+      "sha256": "da598bb1e637e2ff1b4aa8ec57e463819cd8a43aa48efd79f9841e7ba84a427b"
+    },
+    {
+      "path": "src/ocr_local/models.py",
+      "sha256": "1e2c9c93245a58a1cf35f12b582b548b284de286e1968d160d3e2d05ee4d4952"
+    },
+    {
+      "path": "src/ocr_local/input_click.py",
+      "sha256": "c7e8e7eabe8db75b5ecc460122777bb977846dc45fd5a63e19196a1b5c140950"
+    }
+  ]
+}

@@ -16,8 +16,8 @@ from fukua_rpa.log_policy import (
     LOG_PARAMETERS,
     LOG_RECOGNITION,
     LOG_STEP,
-    LOG_TIMING,
     LOG_TIMESTAMP,
+    LOG_TIMING,
     SIMPLE_LOG_CATEGORIES,
     LogPolicy,
     normalize_log_categories,
@@ -166,8 +166,14 @@ class LogPolicyTests(unittest.TestCase):
 
     def test_critical_runtime_failure_survives_empty_custom_selection(self):
         joined = self.run_custom_engine([], execute_result=RuntimeError("boom"))
-        self.assertIn("引擎异常: boom", joined)
+        self.assertIn("引擎异常: RuntimeError", joined)
+        self.assertNotIn("boom", joined)
         self.assertNotIn("完全/运行参数", joined)
+
+    def test_critical_runtime_failure_details_require_privacy_opt_out(self):
+        GLOBAL_CONFIG["privacy_protected"] = False
+        joined = self.run_custom_engine([], execute_result=RuntimeError("boom"))
+        self.assertIn("引擎异常: RuntimeError: 'boom'", joined)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,8 @@
-"""Create a deterministic per-file hash manifest for an onedir release."""
+"""Create a content-hash stable per-file manifest for an onedir release.
+
+Metadata includes generation timestamp; per-file hashes are stable for
+unchanged content.
+"""
 
 from __future__ import annotations
 
@@ -6,31 +10,31 @@ import argparse
 import hashlib
 import json
 import os
-import tempfile
+import sys
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-def file_hash(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+from scripts.hashutil import atomic_write_text, hash_file  # noqa: E402
+
+REPARSE_POINT_ATTRIBUTE = 0x400
 
 
-def atomic_write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+def _is_reparse_point(path: Path) -> bool:
+    """FR-20260811-D15-2: 判定 reparse point（junction / symlink）。
+
+    与 create_release_archive 侧一致：reparse 可能让发布树指向树外内容，使
+    manifest 的覆盖范围失真或泄露出目录结构，必须在生成清单时拒绝。
+    """
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.remove(temp_name)
+        stat_result = path.lstat()
+    except OSError:
+        return True  # 无法 stat 视为不可信，拒绝。
+    attributes = int(getattr(stat_result, "st_file_attributes", 0))
+    return path.is_symlink() or bool(attributes & REPARSE_POINT_ATTRIBUTE)
 
 
 def build_manifest(release_dir):
@@ -38,20 +42,35 @@ def build_manifest(release_dir):
     files = []
     aggregate = hashlib.sha256()
     total_bytes = 0
-    for path in sorted(release_dir.rglob("*"), key=lambda item: item.as_posix().casefold()):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(release_dir).as_posix()
-        size = path.stat().st_size
-        checksum = file_hash(path)
-        total_bytes += size
-        files.append({"path": relative, "size": size, "sha256": checksum})
-        aggregate.update(f"{checksum}  {relative}\n".encode("utf-8"))
+    # FR-20260811-D15-2: 用 os.walk(followlinks=False) 而非 rglob——rglob 会随
+    # reparse point（junction/symlink）下钻，成环时挂起且遍历前无法拦截目录级
+    # reparse；os.walk 不跟随符号链接目录，先逐目录检测再处理文件。
+    for dirpath, dirnames, filenames in os.walk(release_dir, followlinks=False):
+        # 排序 dirnames：directory_sha256 依赖遍历顺序，跨文件系统/平台必须稳定。
+        dirnames.sort(key=str.casefold)
+        for name in list(dirnames):
+            dir_path = Path(dirpath) / name
+            if _is_reparse_point(dir_path):
+                raise RuntimeError(
+                    f"发布树包含 reparse point 目录，拒绝生成清单：{dir_path}"
+                )
+        for name in sorted(filenames, key=str.casefold):
+            path = Path(dirpath) / name
+            if _is_reparse_point(path):
+                raise RuntimeError(
+                    f"发布树包含 reparse point，拒绝生成清单：{path}"
+                )
+            relative = path.relative_to(release_dir).as_posix()
+            size = path.stat().st_size
+            checksum = hash_file(path)
+            total_bytes += size
+            files.append({"path": relative, "size": size, "sha256": checksum})
+            aggregate.update(f"{checksum}  {relative}\n".encode())
     return {
         "format": "fukuaRPA_onedir_manifest",
         "version": 1,
         "build": release_dir.name,
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "file_count": len(files),
         "total_bytes": total_bytes,
         "directory_sha256": aggregate.hexdigest(),
@@ -84,7 +103,7 @@ def main():
         manifest = verify_manifest(release_dir, output)
     else:
         manifest = build_manifest(release_dir)
-        atomic_write(output, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        atomic_write_text(output, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({key: manifest[key] for key in manifest if key != "files"}, ensure_ascii=False, indent=2))
 
 

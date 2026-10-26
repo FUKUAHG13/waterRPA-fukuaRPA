@@ -1,34 +1,21 @@
 import os
 import tempfile
 import unittest
-from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
-from fukua_rpa.ui.main_window import RPAWindow
+from tests.qt_test_support import QtCallbackGuardMixin, create_test_window
 
 
-class SceneWakeUiTests(unittest.TestCase):
+class SceneWakeUiTests(QtCallbackGuardMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
     def create_window(self, base_dir):
-        hotkeys = mock.patch.object(
-            RPAWindow, "register_global_hotkeys", lambda _self: True
-        )
-        warnings = mock.patch.object(
-            QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok
-        )
-        hotkeys.start()
-        warnings.start()
-        self.addCleanup(hotkeys.stop)
-        self.addCleanup(warnings.stop)
-        window = RPAWindow(base_dir=base_dir)
-        self.addCleanup(window.close)
-        return window
+        return create_test_window(self, base_dir)
 
     def test_scene_wake_settings_round_trip_and_disable_sensitivity(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1,0 +1,56 @@
+# P7-2 M-51：pre-commit 门禁（ruff + 模块边界测试）。
+# 安装：pip install pre-commit && pre-commit install
+# 手动触发全量：pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff
+        # INVARIANT: 目标清单必须与 scripts/verify_release.py 的 S11 第一遍一致
+        # （由 tests/test_release_tooling.py::test_release_lint_targets 锁定）。
+        # 此处曾用 `ruff check .`，会连带检查 plugins/*/tests——该子树有 7 项
+        # 位于 CI/发布门禁范围之外的既有违规，使钩子每次提交恒红、实际被绕过。
+        # 也不得改成 `exclude plugins`：那会连当前干净的 plugins/tools 一起放过。
+        # FR-20261003-501: 官方 ruff-pre-commit 钩子的 `entry` 已是
+        # `ruff check --force-exclude`，因此本 `args` 只写目标清单，**不得**再写
+        # `check`；重复会让 pre-commit 组装出
+        # `ruff check --force-exclude check <目标清单>`，`check` 被当作不存在的
+        # 路径 → E902 → 钩子仍恒红。该不变量由
+        # tests/test_release_tooling.py::test_precommit_ruff_hook_command_is_executable
+        # 通过真实执行组装后的命令守护。
+        # FR-20261005-702: pre-commit appends the staged filenames to the hook
+        # command, so staging a file under `plugins/<plugin>/tests/` (outside the
+        # gate scope, with existing violations) would re-introduce the
+        # "always red → bypassed" failure the args list was meant to remove.
+        # Exclude every plugin subtree EXCEPT `plugins/tools`, which the gate does
+        # cover (an `exclude: plugins` would wrongly let tools through).
+        exclude: '^plugins/(?!tools/)'
+        args: ["fukuaRPA.py", "fukua_rpa", "tests", "scripts", "plugins/tools"]
+  - repo: local
+    hooks:
+      - id: module-boundaries
+        name: module boundaries test
+        entry: python -m pytest tests/test_module_boundaries.py -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^fukua_rpa/
+      - id: ui-conventions
+        name: UI development conventions
+        entry: python scripts/check_ui_conventions.py --changed --strict
+        language: system
+        pass_filenames: false
+        files: ^fukua_rpa/ui/.*\.py$
+      # ADV-20261006-019: 把 FR-015 棘轮接入本地钩子。棘轮此前只有手工运行的
+      # `python scripts/pyright_plugin_baseline.py` 一条路径，CI 与提交前都不校验，
+      # 于是"基线与实际不一致"只能等到有人想起来跑才发现。
+      # 只守护**既有**棘轮：越界/缺失/漂移即拒绝，不允许 `--write`、不允许增长。
+      # pyright 未安装时该脚本返回 2——pre-commit 会把非零退出码判为钩子失败
+      # （与 CI 的 2→0 跳过口径不同，DOC-20261010-2901：未装 pyright 时本钩子
+      # 会阻断提交，属预期严格行为；如需本地跳过请先安装 pyright）。
+      - id: pyright-plugin-baseline
+        name: FR-015 pyright plugin baseline ratchet
+        entry: python scripts/pyright_plugin_baseline.py
+        language: system
+        pass_filenames: false
+        files: ^(fukua_rpa/plugin_.*\.py|scripts/pyright_plugin_baseline\.py|pyright_plugin_baseline\.json)$

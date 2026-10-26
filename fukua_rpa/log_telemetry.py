@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import json
-
+from typing import Any
 
 KNOWN_STEP_TIMING_KEYS = (
     "wait.recognition_base",
@@ -22,20 +22,41 @@ KNOWN_STEP_TIMING_KEYS = (
 )
 
 
-def _timing_total(report, name):
+def _timing_total(report: dict[str, Any], name: str) -> float:
+    """Extract the total_ms value for a named timing from a snapshot report.
+
+    Args:
+        report: A performance snapshot dictionary.
+        name: The timing key to look up.
+
+    Returns:
+        The total milliseconds as a float, or 0.0 on any extraction failure.
+    """
     try:
         return float(report.get("timings", {}).get(name, {}).get("total_ms", 0.0))
     except (AttributeError, TypeError, ValueError):
         return 0.0
 
 
-def performance_delta(before, after):
-    """Return timing totals and counters added between two bounded snapshots."""
+def performance_delta(before: dict[str, Any] | None, after: dict[str, Any] | None) -> dict[str, Any]:
+    """Return timing totals and counters added between two bounded snapshots.
+
+    Computes the non-negative difference for each known timing key and each
+    counter present in either snapshot.
+
+    Args:
+        before: The earlier performance snapshot (or None).
+        after: The later performance snapshot (or None).
+
+    Returns:
+        A dictionary with ``timings_ms`` (name -> delta float) and ``counters``
+        (name -> int difference) containing only non-zero entries.
+    """
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
     before_timings = before.get("timings", {})
     after_timings = after.get("timings", {})
-    timing_names = set(KNOWN_STEP_TIMING_KEYS)
+    timing_names: set[str] = set(KNOWN_STEP_TIMING_KEYS)
     if isinstance(before_timings, dict):
         timing_names.update(str(name) for name in before_timings)
     if isinstance(after_timings, dict):
@@ -46,7 +67,7 @@ def performance_delta(before, after):
     }
     before_counters = before.get("counters", {})
     after_counters = after.get("counters", {})
-    counters = {}
+    counters: dict[str, int] = {}
     for name in set(before_counters) | set(after_counters):
         try:
             difference = int(after_counters.get(name, 0)) - int(
@@ -60,13 +81,29 @@ def performance_delta(before, after):
 
 
 def complete_step_timing_payload(
-    before,
-    after,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
     *,
-    total_ms,
-    pre_execute_wait_ms,
-    execute_ms,
-):
+    total_ms: float,
+    pre_execute_wait_ms: float,
+    execute_ms: float,
+) -> dict[str, Any]:
+    """Build a structured timing breakdown for a single step execution.
+
+    Combines top-level phase durations with nested timing deltas from the
+    performance snapshot pair to produce a diagnostic payload.
+
+    Args:
+        before: Performance snapshot taken before step execution.
+        after: Performance snapshot taken after step execution.
+        total_ms: Total elapsed time for the step in milliseconds.
+        pre_execute_wait_ms: Time spent in pre-execution waits.
+        execute_ms: Time spent in the execute call itself.
+
+    Returns:
+        A dictionary containing total, top-level, nested-phase, and
+        counter-change breakdowns suitable for telemetry logging.
+    """
     delta = performance_delta(before, after)
     timings = delta["timings_ms"]
     accounted = max(0.0, float(pre_execute_wait_ms)) + max(
@@ -114,7 +151,19 @@ def complete_step_timing_payload(
     }
 
 
-def format_complete_payload(label, payload):
+def format_complete_payload(label: str, payload: dict[str, Any]) -> str:
+    """Format a telemetry payload as an HTML-escaped, styled log block.
+
+    Serializes the payload as indented JSON wrapped in a colored HTML label
+    and a ``<pre>`` block, safe for display in rich-text log views.
+
+    Args:
+        label: A short category label shown as the block header.
+        payload: The dictionary payload to serialize.
+
+    Returns:
+        An HTML string with the escaped label and formatted JSON body.
+    """
     serialized = json.dumps(
         payload,
         ensure_ascii=False,

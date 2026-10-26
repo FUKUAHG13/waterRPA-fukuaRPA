@@ -1,0 +1,28 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+ignore = ["E501", "UP031", "UP032"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["fukua_rpa"]
+
+[tool.coverage.run]
+source = ["fukua_rpa"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "basic"
+include = ["fukua_rpa"]
+exclude = ["**/__pycache__", "build", "dist", "plugins"]
+reportMissingImports = false
+reportMissingModuleSource = false
+reportOptionalMemberAccess = "warning"
+reportOptionalSubscript = "warning"
+reportGeneralTypeIssues = "warning"

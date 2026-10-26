@@ -1,4 +1,11 @@
-"""Benchmark native multiscale scheduling against a real visible target."""
+"""Benchmark native multiscale scheduling against a real visible target.
+
+FR-20260811-D16（差异文档化）：本基准是**原生专属**基准（无原生核心则无被测
+对象），原生缺失时硬失败（SystemExit，见 main）——这与 benchmark_vision.py 的
+混合回退基准不同（后者原生缺失时优雅跳过、报告 available:False 并继续测
+Python 路径）。这是语义差异而非不一致：原生专属基准没有可测的 Python 等价物，
+硬失败是正确行为；统一两者处理会丢失"基准无意义"的信号。
+"""
 
 from __future__ import annotations
 
@@ -22,15 +29,8 @@ from fukua_rpa.native_smoke import (  # noqa: E402
     _capture_region,
     _generated_pattern_window,
 )
-from fukua_rpa.vision import NativeVisionCore  # noqa: E402
-
-
-def percentile(values, percent):
-    ordered = sorted(values)
-    if not ordered:
-        return 0.0
-    index = max(0, math.ceil(len(ordered) * percent / 100.0) - 1)
-    return ordered[min(index, len(ordered) - 1)]
+from fukua_rpa.vision.core import NativeVisionCore  # noqa: E402
+from scripts.benchmark_util import apply_benchmark_affinity, percentile  # noqa: E402
 
 
 def time_search(core, rounds, call):
@@ -129,6 +129,9 @@ def main():
     parser.add_argument("--output", default="")
     parser.add_argument("--assert-limits", action="store_true")
     args = parser.parse_args()
+    # OPEN-RC-20261015-PERF: bind this benchmark process to the machine-reported top
+    # core class (runtime-derived mask + read-back self-check; aborts on failure).
+    affinity_env = apply_benchmark_affinity()
     current = NativeVisionCore(base_dir=str(ROOT))
     if not current.available:
         raise SystemExit(current.load_error)
@@ -150,6 +153,7 @@ def main():
                 "current": benchmark_core(
                     current, template_path, region, args.rounds, extended=True
                 ),
+                **affinity_env,
             }
             if args.compare_native_base:
                 comparison = NativeVisionCore(
@@ -185,6 +189,8 @@ def main():
         Path(output_path).write_text(serialized + "\n", encoding="utf-8")
 
     if args.assert_limits:
+        # extended=True (passed to benchmark_core above) guarantees all scenario
+        # keys below are present in the report; direct access is safe.
         current_report = report["current"]
         if current_report["api_version"] < 11000:
             raise SystemExit("native scheduler benchmark requires API 11000+")

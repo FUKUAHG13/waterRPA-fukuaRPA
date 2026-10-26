@@ -1,12 +1,21 @@
 """Typed Win32 declarations and hotkey helpers used across the application."""
 
 import ctypes
+import logging
 from ctypes import wintypes
+from typing import cast
 
 from PySide6.QtCore import Qt
 
+logger = logging.getLogger(__name__)
+
+# pyright: reportAttributeAccessIssue=false
 
 GetAsyncKeyState = ctypes.windll.user32.GetAsyncKeyState
+# Declare the signature so ctypes marshals arguments/return correctly instead
+# of assuming the platform default (which happens to work but is unspecified).
+GetAsyncKeyState.argtypes = [ctypes.c_int]
+GetAsyncKeyState.restype = ctypes.c_short
 try:
     GetCurrentProcessorNumber = ctypes.windll.kernel32.GetCurrentProcessorNumber
     GetCurrentProcessorNumber.restype = ctypes.c_ulong
@@ -27,12 +36,23 @@ for index in range(48, 58):
     VK_MAP[index] = chr(index)
 for index in range(112, 124):
     VK_MAP[index] = f"f{index - 111}"
+# INVARIANT: 小键盘必须用 "num0".."num9"，与 HOTKEY_NAME_TO_VK 保持一致。
+# 若映射为 "0".."9"，hotkey_text_from_pressed_vks 经 VK_MAP 取名后走
+# parse_hotkey_text 会得到 vk 0x30（顶排数字）而非 0x60：录入时物理键与文本
+# 不符，已配置的裸键映射 "num0" 在 Hook 匹配中永不命中（映射模式 Hook 是裸键
+# 的唯一后端）——属静默失效（审查 FR-006）。顶排数字仍由 0x30-0x39 映射为
+# "0".."9"，既有配置解析不受影响。
 for index in range(0x60, 0x6A):
-    VK_MAP[index] = str(index - 0x60)
+    VK_MAP[index] = f"num{index - 0x60}"
 VK_MAP.update({
     0xBA: ";", 0xBB: "=", 0xBC: ",", 0xBD: "-", 0xBE: ".", 0xBF: "/", 0xC0: "`",
     0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'",
 })
+
+# Named virtual-key codes used by the recording hotkeys (code review L-23):
+# F8 toggles recording, Escape cancels it.
+VK_ESCAPE = 0x1B
+VK_F8 = 0x77
 
 HOTKEY_NAME_TO_VK = {
     "backspace": 0x08, "tab": 0x09, "enter": 0x0D, "capslock": 0x14, "esc": 0x1B,
@@ -82,6 +102,10 @@ SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 SWP_NOOWNERZORDER = 0x0200
 WM_HOTKEY = 0x0312
+WM_ENTERSIZEMOVE = 0x0231
+WM_EXITSIZEMOVE = 0x0232
+WM_SIZING = 0x0214
+WM_MOVING = 0x0216
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
@@ -105,8 +129,16 @@ MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 HOTKEY_ID_START = 0x5741
 HOTKEY_ID_STOP = 0x5742
+HOTKEY_ID_AUTO_CLICKER_START = 0x5743
+HOTKEY_ID_AUTO_CLICKER_STOP = 0x5744
 HOTKEY_ID_MAPPING_BASE = 0x5800
-HOTKEY_MAPPING_COUNT = 5
+HOTKEY_ID_PROFILE_START_BASE = 0x5900
+HOTKEY_ID_PROFILE_STOP_BASE = 0x5A00
+
+# GetClassLongPtr(GCL_STYLE) 索引与类风格标志：用于判断目标窗口是否声明
+# CS_DBLCLKS（系统会自动把连续两次单击合成为 WM_*BUTTONDBLCLK）。
+GCL_STYLE = -26
+CS_DBLCLKS = 0x0008
 
 
 class POINT(ctypes.Structure):
@@ -131,7 +163,7 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
         ("mouseData", wintypes.DWORD),
         ("flags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
+        ("dwExtraInfo", ctypes.c_void_p),
     ]
 
 
@@ -141,7 +173,7 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
         ("scanCode", wintypes.DWORD),
         ("flags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
+        ("dwExtraInfo", ctypes.c_void_p),
     ]
 
 
@@ -168,94 +200,153 @@ MONITORENUMPROC = ctypes.WINFUNCTYPE(
 )
 
 
-def _configure_function_signatures():
+def _safe_configure(func, argtypes, restype, name) -> None:
+    """Configure argtypes/restype for a single Win32 function.
+
+    Failures are logged but do not prevent other functions from being configured
+    (e.g. security software may hook individual function attributes).
+
+    FR-20261008-402 / ADV-20261008-402: the failure notice used to be written to
+    ``sys.stderr``. In a frozen windowed build ``sys.stderr`` is ``None``, so the
+    handler itself raised ``AttributeError`` and escaped ``_configure_function_signatures``
+    — turning one hooked function into a module-import failure that takes the whole
+    application down. Log through the module logger instead, which never raises.
+
+    DOC-20261009-001: these records are NOT routed through the project log policy
+    (``fukua_rpa.log_policy``). They stay on the stdlib module logger, which has no
+    handler configured here, so they are neither filtered nor categorised by the
+    project policy; their visibility in a frozen windowed build (``sys.stderr`` is
+    ``None``) is pending real-machine verification
+    (REVIEW-20261009-001 ``RM-20261009-001``).
+    """
     try:
-        user32.SetWindowPos.argtypes = [
-            wintypes.HWND, wintypes.HWND,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint,
-        ]
-        user32.SetWindowPos.restype = wintypes.BOOL
-        user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
-        user32.RegisterHotKey.restype = wintypes.BOOL
-        user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.UnregisterHotKey.restype = wintypes.BOOL
-        user32.WindowFromPoint.argtypes = [POINT]
-        user32.WindowFromPoint.restype = wintypes.HWND
-        user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
-        user32.ScreenToClient.restype = wintypes.BOOL
-        user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        user32.PostMessageW.restype = wintypes.BOOL
-        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
-        user32.GetAncestor.restype = wintypes.HWND
-        user32.GetParent.argtypes = [wintypes.HWND]
-        user32.GetParent.restype = wintypes.HWND
-        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
-        user32.GetWindowRect.restype = wintypes.BOOL
-        user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
-        user32.GetClientRect.restype = wintypes.BOOL
-        user32.IsWindowVisible.argtypes = [wintypes.HWND]
-        user32.IsWindowVisible.restype = wintypes.BOOL
-        user32.IsWindowEnabled.argtypes = [wintypes.HWND]
-        user32.IsWindowEnabled.restype = wintypes.BOOL
-        user32.IsWindow.argtypes = [wintypes.HWND]
-        user32.IsWindow.restype = wintypes.BOOL
-        user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
-        user32.ClientToScreen.restype = wintypes.BOOL
-        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-        user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user32.GetClassNameW.restype = ctypes.c_int
-        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-        user32.GetWindowTextLengthW.restype = ctypes.c_int
-        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user32.GetWindowTextW.restype = ctypes.c_int
-        user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
-        user32.GetDlgCtrlID.restype = ctypes.c_int
-        user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.GetDlgItem.restype = wintypes.HWND
-        user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
-        user32.EnumWindows.restype = wintypes.BOOL
-        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.ShowWindow.restype = wintypes.BOOL
-        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-        user32.SetForegroundWindow.restype = wintypes.BOOL
-        user32.EnumChildWindows.argtypes = [wintypes.HWND, WNDENUMPROC, wintypes.LPARAM]
-        user32.EnumChildWindows.restype = wintypes.BOOL
-        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, ctypes.c_void_p, wintypes.DWORD]
-        user32.SetWindowsHookExW.restype = ctypes.c_void_p
-        user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
-        user32.UnhookWindowsHookEx.restype = wintypes.BOOL
-        user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, ctypes.c_void_p]
-        user32.CallNextHookEx.restype = LRESULT
-        user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), ctypes.c_void_p, wintypes.UINT, wintypes.UINT]
-        user32.GetMessageW.restype = wintypes.BOOL
-        user32.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), ctypes.c_void_p, wintypes.UINT, wintypes.UINT, wintypes.UINT]
-        user32.PeekMessageW.restype = wintypes.BOOL
-        user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
-        user32.TranslateMessage.restype = wintypes.BOOL
-        user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
-        user32.DispatchMessageW.restype = LRESULT
-        user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        user32.PostThreadMessageW.restype = wintypes.BOOL
-        user32.EnumDisplayMonitors.argtypes = [
-            wintypes.HDC, ctypes.POINTER(RECT), MONITORENUMPROC, wintypes.LPARAM
-        ]
-        user32.EnumDisplayMonitors.restype = wintypes.BOOL
-        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFOEXW)]
-        user32.GetMonitorInfoW.restype = wintypes.BOOL
-        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
-        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
-        kernel32.GetCurrentThreadId.argtypes = []
-        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
-    except Exception:
-        # Individual APIs are checked again where failure can be recovered.
-        pass
+        func.argtypes = argtypes
+        func.restype = restype
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Win32 signature setup failed for %s: %s", name, error)
+
+
+def _configure_function_signatures() -> None:
+    _safe_configure(user32.SetWindowPos, [
+        wintypes.HWND, wintypes.HWND,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+    ], wintypes.BOOL, "SetWindowPos")
+    _safe_configure(user32.RegisterHotKey,
+                    [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT],
+                    wintypes.BOOL, "RegisterHotKey")
+    _safe_configure(user32.UnregisterHotKey,
+                    [wintypes.HWND, ctypes.c_int],
+                    wintypes.BOOL, "UnregisterHotKey")
+    _safe_configure(user32.WindowFromPoint, [POINT],
+                    wintypes.HWND, "WindowFromPoint")
+    _safe_configure(user32.ScreenToClient,
+                    [wintypes.HWND, ctypes.POINTER(POINT)],
+                    wintypes.BOOL, "ScreenToClient")
+    _safe_configure(user32.PostMessageW,
+                    [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM],
+                    wintypes.BOOL, "PostMessageW")
+    _safe_configure(user32.GetAncestor, [wintypes.HWND, wintypes.UINT],
+                    wintypes.HWND, "GetAncestor")
+    _safe_configure(user32.GetParent, [wintypes.HWND],
+                    wintypes.HWND, "GetParent")
+    _safe_configure(user32.GetWindowRect,
+                    [wintypes.HWND, ctypes.POINTER(RECT)],
+                    wintypes.BOOL, "GetWindowRect")
+    _safe_configure(user32.GetClientRect,
+                    [wintypes.HWND, ctypes.POINTER(RECT)],
+                    wintypes.BOOL, "GetClientRect")
+    _safe_configure(user32.IsWindowVisible, [wintypes.HWND],
+                    wintypes.BOOL, "IsWindowVisible")
+    _safe_configure(user32.IsWindowEnabled, [wintypes.HWND],
+                    wintypes.BOOL, "IsWindowEnabled")
+    _safe_configure(user32.IsWindow, [wintypes.HWND],
+                    wintypes.BOOL, "IsWindow")
+    _safe_configure(user32.ClientToScreen,
+                    [wintypes.HWND, ctypes.POINTER(POINT)],
+                    wintypes.BOOL, "ClientToScreen")
+    _safe_configure(user32.GetWindowThreadProcessId,
+                    [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)],
+                    wintypes.DWORD, "GetWindowThreadProcessId")
+    _safe_configure(user32.GetClassNameW,
+                    [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int],
+                    ctypes.c_int, "GetClassNameW")
+    _safe_configure(user32.GetWindowTextLengthW, [wintypes.HWND],
+                    ctypes.c_int, "GetWindowTextLengthW")
+    _safe_configure(user32.GetWindowTextW,
+                    [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int],
+                    ctypes.c_int, "GetWindowTextW")
+    _safe_configure(user32.GetClassLongPtrW,
+                    [wintypes.HWND, ctypes.c_int],
+                    ctypes.c_void_p, "GetClassLongPtrW")
+    _safe_configure(user32.GetDlgCtrlID, [wintypes.HWND],
+                    ctypes.c_int, "GetDlgCtrlID")
+    _safe_configure(user32.GetDlgItem, [wintypes.HWND, ctypes.c_int],
+                    wintypes.HWND, "GetDlgItem")
+    _safe_configure(user32.EnumWindows, [WNDENUMPROC, wintypes.LPARAM],
+                    wintypes.BOOL, "EnumWindows")
+    _safe_configure(user32.ShowWindow, [wintypes.HWND, ctypes.c_int],
+                    wintypes.BOOL, "ShowWindow")
+    _safe_configure(user32.SetForegroundWindow, [wintypes.HWND],
+                    wintypes.BOOL, "SetForegroundWindow")
+    # SAFETY: HWND is a 64-bit handle on Win64. Without this restype ctypes
+    # truncates the return to 32 bits, corrupting the handle passed to
+    # get_window_title / window checks (see worker.py / uia_smoke.py callers).
+    _safe_configure(user32.GetForegroundWindow, [],
+                    wintypes.HWND, "GetForegroundWindow")
+    _safe_configure(user32.EnumChildWindows,
+                    [wintypes.HWND, WNDENUMPROC, wintypes.LPARAM],
+                    wintypes.BOOL, "EnumChildWindows")
+    _safe_configure(user32.SetWindowsHookExW,
+                    [ctypes.c_int, HOOKPROC, ctypes.c_void_p, wintypes.DWORD],
+                    ctypes.c_void_p, "SetWindowsHookExW")
+    _safe_configure(user32.UnhookWindowsHookEx, [ctypes.c_void_p],
+                    wintypes.BOOL, "UnhookWindowsHookEx")
+    _safe_configure(user32.CallNextHookEx,
+                    [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, ctypes.c_void_p],
+                    LRESULT, "CallNextHookEx")
+    _safe_configure(user32.GetMessageW,
+                    [ctypes.POINTER(wintypes.MSG), ctypes.c_void_p, wintypes.UINT, wintypes.UINT],
+                    wintypes.BOOL, "GetMessageW")
+    _safe_configure(user32.PeekMessageW,
+                    [ctypes.POINTER(wintypes.MSG), ctypes.c_void_p, wintypes.UINT, wintypes.UINT, wintypes.UINT],
+                    wintypes.BOOL, "PeekMessageW")
+    _safe_configure(user32.TranslateMessage,
+                    [ctypes.POINTER(wintypes.MSG)],
+                    wintypes.BOOL, "TranslateMessage")
+    _safe_configure(user32.DispatchMessageW,
+                    [ctypes.POINTER(wintypes.MSG)],
+                    LRESULT, "DispatchMessageW")
+    _safe_configure(user32.PostThreadMessageW,
+                    [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM],
+                    wintypes.BOOL, "PostThreadMessageW")
+    _safe_configure(user32.EnumDisplayMonitors, [
+        wintypes.HDC, ctypes.POINTER(RECT), MONITORENUMPROC, wintypes.LPARAM
+    ], wintypes.BOOL, "EnumDisplayMonitors")
+    _safe_configure(user32.GetMonitorInfoW,
+                    [wintypes.HANDLE, ctypes.POINTER(MONITORINFOEXW)],
+                    wintypes.BOOL, "GetMonitorInfoW")
+    _safe_configure(kernel32.GetModuleHandleW, [wintypes.LPCWSTR],
+                    ctypes.c_void_p, "GetModuleHandleW")
+    _safe_configure(kernel32.GetCurrentThreadId, [],
+                    wintypes.DWORD, "GetCurrentThreadId")
 
 
 _configure_function_signatures()
 
 
-def key_event_to_hotkey_text(event):
+def get_window_title(hwnd: int) -> str:
+    """获取窗口标题（统一实现，替代散落的 ctypes GetWindowTextW 调用）。"""
+    if not hwnd:
+        return ""
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+def key_event_to_hotkey_text(event) -> str:
     key = event.key()
     modifiers = event.modifiers()
     modifier_flags = Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier
@@ -300,7 +391,7 @@ def key_event_to_hotkey_text(event):
     return "+".join(parts)
 
 
-def normalize_hotkey_token(token):
+def normalize_hotkey_token(token) -> str:
     token = str(token or "").strip().lower().replace("＋", "+")
     token = HOTKEY_ALIAS.get(token, token)
     if token.startswith("numpad") and token[6:].isdigit():
@@ -308,7 +399,7 @@ def normalize_hotkey_token(token):
     return token
 
 
-def hotkey_display_text(text):
+def hotkey_display_text(text) -> str:
     raw = str(text or "").strip().replace("＋", "+")
     chunks = [normalize_hotkey_token(part) for part in raw.split("+") if str(part).strip()]
     if not chunks:
@@ -335,7 +426,7 @@ def hotkey_display_text(text):
     return "+".join(display_parts)
 
 
-def parse_hotkey_text(text):
+def parse_hotkey_text(text) -> dict[str, str | int | list[str] | bool] | None:
     raw = str(text or "").strip().replace("＋", "+")
     if not raw:
         return None
@@ -375,22 +466,31 @@ def parse_hotkey_text(text):
     }
 
 
-def is_safe_global_hotkey(parsed):
+def is_safe_global_hotkey(parsed) -> bool:
     return bool(parsed and ((not parsed.get("bare")) or parsed.get("key") in SAFE_BARE_GLOBAL_KEYS))
 
 
-def hotkey_signature(parsed):
+def hotkey_signature(parsed) -> tuple[int, int] | None:
     if not parsed:
         return None
     return int(parsed.get("modifiers", 0)), int(parsed.get("vk", 0))
 
 
-def modifier_is_down(name):
-    virtual_key = MOD_NAME_TO_VK.get(name)
-    return bool(virtual_key and (GetAsyncKeyState(virtual_key) & 0x8000))
+def modifier_is_down(name) -> bool:
+    """Whether *any* virtual key of that modifier is currently held.
+
+    FR-SCOPE003-002: a modifier has left/right/generic variants, and users press
+    the right one all the time. Querying only the generic VK (or only the left one)
+    made ``win`` fail when just the right Win (0x5C) was down, so a binding the
+    user had actually pressed looked inactive. The whole set must be queried.
+    """
+    virtual_keys = MOD_NAME_TO_VKS.get(name)
+    if not virtual_keys:
+        return False
+    return any(GetAsyncKeyState(vk) & 0x8000 for vk in virtual_keys)
 
 
-def hotkey_is_down(parsed):
+def hotkey_is_down(parsed) -> bool:
     if not parsed:
         return False
     required_modifiers = set(parsed.get("mod_names", []))
@@ -401,15 +501,7 @@ def hotkey_is_down(parsed):
     return bool(GetAsyncKeyState(parsed["vk"]) & 0x8000)
 
 
-def current_keyboard_hotkey_text(virtual_key):
-    pressed_vks = {int(virtual_key)}
-    for name in MOD_ORDER:
-        if modifier_is_down(name):
-            pressed_vks.update(MOD_NAME_TO_VKS[name])
-    return hotkey_text_from_pressed_vks(virtual_key, pressed_vks)
-
-
-def hotkey_text_from_pressed_vks(virtual_key, pressed_vks):
+def hotkey_text_from_pressed_vks(virtual_key, pressed_vks) -> str:
     """Build a hotkey from Hook-maintained key state, without async-state races."""
 
     virtual_key = int(virtual_key)
@@ -426,10 +518,10 @@ def hotkey_text_from_pressed_vks(virtual_key, pressed_vks):
     ]
     parts.append(key_name)
     parsed = parse_hotkey_text("+".join(parts))
-    return parsed["text"] if parsed else ""
+    return cast(str, parsed["text"]) if parsed else ""
 
 
-def pressed_hotkey_display_text(pressed_vks):
+def pressed_hotkey_display_text(pressed_vks) -> str:
     """Render the complete Hook-maintained key state, including modifiers only."""
 
     down = {int(vk) for vk in (pressed_vks or ())}
@@ -447,5 +539,61 @@ def pressed_hotkey_display_text(pressed_vks):
     return hotkey_display_text("+".join(parts)) if parts else ""
 
 
-def make_mouse_lparam(x, y):
-    return wintypes.LPARAM(((int(y) & 0xFFFF) << 16) | (int(x) & 0xFFFF))
+def make_mouse_lparam(x, y) -> wintypes.LPARAM:
+    # WM_*BUTTON* 的 lParam 坐标以有符号 16 位（SHORT）解释。坐标超过 ±32767 时
+    # 直接 & 0xFFFF 会回绕成错误的有符号值（例如 x=40000 被解释为 -25536），导致
+    # 点击落到错误位置（P3-3）。先饱和到 [-32768, 32767]，再取低 16 位，保证两字节
+    # 补码表示正确。正常显示器 client 坐标均落在此范围内，本保护不改变既有行为。
+    x = max(-32768, min(32767, int(x)))
+    y = max(-32768, min(32767, int(y)))
+    return wintypes.LPARAM(((y & 0xFFFF) << 16) | (x & 0xFFFF))
+
+
+def post_double_click_to_window_at_point(screen_x, screen_y, button="left") -> bool:
+    """向前台双击落点处的窗口补发一次 ``WM_*BUTTONDBLCLK``。
+
+    DESIGN: 前台双击原本以两次 down/up 物理注入模拟，对未声明 ``CS_DBLCLKS`` 类风格
+    或自行实现双击计时的目标窗口不会收到 ``WM_LBUTTONDBLCLK``，与后台 PostMessage
+    路径（mapping_backend）语义不一致（见 P3-1）。本函数在物理点击之后对落点窗口
+    显式补发一次 DBLCLK 使前后台一致；若窗口已声明 ``CS_DBLCLKS``（系统会自动
+    合成 DBLCLK）则跳过，避免对这类窗口重复触发。
+
+    坐标为输入坐标（PMv2 下即物理像素；System-DPI 回退下与 WindowFromPoint/
+    GetWindowRect 的虚拟化空间同一致，FR-401-001）。返回值仅指示“是否成功补发/已
+    无需补发”，失败时静默返回 False（物理点击仍已完成，不影响主流程）。
+
+    Args:
+        screen_x: 点击点屏幕横坐标（输入坐标）。
+        screen_y: 点击点屏幕纵坐标（输入坐标）。
+        button: 鼠标按键，"left" 或 "right"。
+    """
+    try:
+        point = POINT(int(screen_x), int(screen_y))
+        hwnd = user32.WindowFromPoint(point)
+        if not hwnd:
+            return False
+        # FR-WIN-001: 向落点控件（而非顶层窗口）补发 DBLCLK。顶层窗口带标题栏
+        # 外框，向它发 WM_*BUTTONDBLCLK 不会转成子控件的 BN_DBLCLK；且按根窗口
+        # GetWindowRect 算出的 client 坐标含外框偏移而错位。
+        target = hwnd
+        # 已声明 CS_DBLCLKS 的窗口由系统自动合成 DBLCLK，无需补发。
+        style = int(user32.GetClassLongPtrW(target, GCL_STYLE) or 0)
+        if style & CS_DBLCLKS:
+            return True
+        # 用 ScreenToClient 把屏幕点换算为落点窗口客户区坐标，避免外框偏移。
+        client = POINT(int(screen_x), int(screen_y))
+        if not user32.ScreenToClient(target, ctypes.byref(client)):
+            return False
+        lparam = make_mouse_lparam(int(client.x), int(client.y))
+        if button == "right":
+            msg, flag = WM_RBUTTONDBLCLK, MK_RBUTTON
+        else:
+            msg, flag = WM_LBUTTONDBLCLK, MK_LBUTTON
+        user32.PostMessageW(target, msg, flag, lparam)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # FR-20261008-402 / DOC-20261008-401: log instead of writing to
+        # ``sys.stderr`` (``None`` in a frozen windowed build), and return False so
+        # the documented "失败时静默返回 False" contract holds on this path too.
+        logger.warning("post_double_click_to_window_at_point 失败: %s", exc)
+        return False

@@ -16,11 +16,23 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fukua_rpa.engine import RPAEngine
-from fukua_rpa.runtime_state import RunLifecycle
+from fukua_rpa.engine import RPAEngine  # noqa: E402
+from fukua_rpa.runtime_state import RunLifecycle  # noqa: E402
 
 
 def main():
+    import threading
+
+    def _timeout_exit():
+        import os
+
+        print("Soak test exceeded 1 hour; forcing exit.", file=sys.stderr)
+        os._exit(2)
+
+    _timer = threading.Timer(3600, _timeout_exit)
+    _timer.daemon = True
+    _timer.start()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--rounds", type=int, default=20000)
     parser.add_argument("--assert-limits", action="store_true")
@@ -46,6 +58,9 @@ def main():
     with mock.patch.object(RPAEngine, "set_high_priority", lambda _self: None):
         engine = RPAEngine()
     engine.log_level = -1
+    # Permissive lambda stubs are intentional: the soak test targets memory-leak
+    # detection over many lifecycle iterations, not functional verification of
+    # task execution, so real task logic is replaced with cheap no-op success.
     engine.load_and_precompute = lambda _tasks: True
     engine.execute_task_once = lambda *_args, **_kwargs: "success"
     for _index in range(min(rounds, 1000)):

@@ -10,6 +10,17 @@
 *.svg text eol=lf
 *.cpp text eol=lf
 *.h text eol=lf
+# INVARIANT: 凡会被打进 .fkrplugin 的文本文件都必须在此显式钉死 eol=lf。
+# 仅靠上面的 `* text=auto` 是不够的：text=auto 把换行交给 core.autocrlf 决定，
+# 而 Git for Windows 的 system 配置默认 core.autocrlf=true，于是新克隆检出的
+# requirements.txt/LICENSE 是 CRLF，包内却是 LF——包一致性门禁必红。更糟的是
+# manifest.json 的 files 段存的是各文件 SHA-256，换行随环境漂移会让哈希、进而
+# 让整个包的字节随构建机器漂移，直接摧毁 build_zip 承诺的确定性打包。
+# 本仓库此前不暴露该问题，只是因为主工作副本带着一份未纳入版本控制的本地
+# core.autocrlf=false 覆盖。plugins/tools/tests/test_package_in_sync.py 中的
+# test_packaged_text_members_pin_eol 会断言每个打包成员都被显式钉死。
+*.txt text eol=lf
+LICENSE text eol=lf
 *.ps1 text eol=crlf
 *.bat text eol=crlf
 *.cmd text eol=crlf
@@ -25,3 +36,7 @@
 *.pyd binary
 *.lib binary
 *.obj binary
+# 插件分发包是 ZIP。此前仅靠 `* text=auto` 的启发式（内容含 NUL 即判为二进制）
+# 兜底；一旦某个包恰好不含 NUL，git 就会对它做换行转换并损坏压缩流。显式声明
+# 消除这一隐患，也让包与其中 manifest.json（eol=lf）的换行契约不再互相干扰。
+*.fkrplugin binary

@@ -30,11 +30,19 @@ class RuntimePathTests(unittest.TestCase):
                 paths, "get_install_dir", return_value=install_dir
             ), mock.patch.object(
                 paths, "_directory_is_writable", return_value=False
-            ), mock.patch.dict(os.environ, {"LOCALAPPDATA": local_dir}):
-                paths.runtime_path_info.cache_clear()
-                info = paths.runtime_path_info()
-                self.assertEqual(info.data_dir, os.path.join(local_dir, "fukuaRPA"))
-                self.assertEqual(info.mode, "local_app_data")
+            ):
+                previous = os.environ.get("LOCALAPPDATA")
+                os.environ["LOCALAPPDATA"] = local_dir
+                try:
+                    paths.runtime_path_info.cache_clear()
+                    info = paths.runtime_path_info()
+                    self.assertEqual(info.data_dir, os.path.join(local_dir, "fukuaRPA"))
+                    self.assertEqual(info.mode, "local_app_data")
+                finally:
+                    if previous is None:
+                        os.environ.pop("LOCALAPPDATA", None)
+                    else:
+                        os.environ["LOCALAPPDATA"] = previous
 
     def test_portable_flag_never_silently_moves_data(self):
         with tempfile.TemporaryDirectory() as install_dir:

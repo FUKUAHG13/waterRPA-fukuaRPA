@@ -19,16 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fukua_rpa.vision import NativeVisionCore
-from fukua_rpa.opencv_runtime import configure_opencv_threads
-
-
-def percentile(values, percent):
-    ordered = sorted(values)
-    if not ordered:
-        return 0.0
-    index = max(0, int(np.ceil(len(ordered) * percent / 100.0)) - 1)
-    return ordered[min(index, len(ordered) - 1)]
+from fukua_rpa.vision.core import NativeVisionCore  # noqa: E402
+from fukua_rpa.vision.opencv_runtime import configure_opencv_threads  # noqa: E402
+from scripts.benchmark_util import apply_benchmark_affinity, percentile  # noqa: E402
 
 
 def timed(callable_, rounds):
@@ -73,6 +66,21 @@ def deterministic_scene(width, height, channels=1, seed=20260711):
     return scene, template
 
 
+def evaluate_opencv_match(scene, template, expected) -> dict:
+    response = cv2.matchTemplate(scene, template, cv2.TM_CCOEFF_NORMED)
+    _minimum, score, _minimum_location, location = cv2.minMaxLoc(response)
+    distance = float(
+        np.hypot(location[0] - expected[0], location[1] - expected[1])
+    )
+    return {
+        "ok": distance <= 0.01 and float(score) >= 0.999,
+        "expected_top_left": [int(expected[0]), int(expected[1])],
+        "actual_top_left": [int(location[0]), int(location[1])],
+        "distance_pixels": round(distance, 3),
+        "score": round(float(score), 6),
+    }
+
+
 def benchmark_opencv(rounds):
     report = {}
     for label, width, height in (
@@ -81,27 +89,37 @@ def benchmark_opencv(rounds):
         ("4k", 3840, 2160),
     ):
         scene, template = deterministic_scene(width, height, channels=1)
-        report[f"gray_single_{label}"] = timed(
+        metric = timed(
             lambda s=scene, t=template: cv2.matchTemplate(
                 s, t, cv2.TM_CCOEFF_NORMED
             ),
             rounds,
         )
-        report[f"gray_single_{label}"]["working_set_bytes"] = int(
-            scene.nbytes + template.nbytes
+        metric["working_set_bytes"] = int(scene.nbytes + template.nbytes)
+        metric["correctness"] = evaluate_opencv_match(
+            scene,
+            template,
+            (width * 2 // 3, height // 3),
         )
+        report[f"gray_single_{label}"] = metric
         del scene, template
 
     color_scene, color_template = deterministic_scene(1920, 1080, channels=3)
-    report["color_single_1080p"] = timed(
+    color_metric = timed(
         lambda s=color_scene, t=color_template: cv2.matchTemplate(
             s, t, cv2.TM_CCOEFF_NORMED
         ),
         rounds,
     )
-    report["color_single_1080p"]["working_set_bytes"] = int(
+    color_metric["working_set_bytes"] = int(
         color_scene.nbytes + color_template.nbytes
     )
+    color_metric["correctness"] = evaluate_opencv_match(
+        color_scene,
+        color_template,
+        (1920 * 2 // 3, 1080 // 3),
+    )
+    report["color_single_1080p"] = color_metric
     del color_scene, color_template
 
     scene, template = deterministic_scene(1920, 1080, channels=1)
@@ -119,6 +137,13 @@ def benchmark_opencv(rounds):
     report["gray_four_regions_1080p"]["searched_pixels"] = int(
         sum(region.shape[0] * region.shape[1] for region in regions)
     )
+    negative_peak = max(
+        float(cv2.minMaxLoc(response)[1]) for response in match_regions()
+    )
+    report["gray_four_regions_1080p"]["correctness"] = {
+        "ok": negative_peak < 0.99,
+        "negative_peak_score": round(negative_peak, 6),
+    }
 
     scale_values = (0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2)
     variants = [
@@ -142,6 +167,11 @@ def benchmark_opencv(rounds):
     report["gray_nine_scales_1080p"]["variant_bytes"] = int(
         sum(variant.nbytes for variant in variants)
     )
+    report["gray_nine_scales_1080p"]["correctness"] = evaluate_opencv_match(
+        scene,
+        variants[scale_values.index(1.0)],
+        (1920 * 2 // 3, 1080 // 3),
+    )
     return report
 
 
@@ -151,8 +181,10 @@ def benchmark_native(base_dir, rounds, template_path):
         return {"available": False, "error": core.load_error}
     core.reset_performance_stats()
     region = [(0, 0, 320, 180)]
-    timing = timed(
-        lambda: core.find_template(
+    results = []
+
+    def find_negative_sample():
+        result = core.find_template(
             template_path,
             region,
             0.8,
@@ -161,7 +193,12 @@ def benchmark_native(base_dir, rounds, template_path):
             True,
             0.999,
             find_all=False,
-        ),
+        )
+        results.append(result)
+        return result
+
+    timing = timed(
+        find_negative_sample,
         rounds,
     )
     return {
@@ -169,6 +206,10 @@ def benchmark_native(base_dir, rounds, template_path):
         "api_version": core.version,
         "timing": timing,
         "stats": core.performance_stats(),
+        "correctness": {
+            "ok": not any(bool(result) for result in results),
+            "unexpected_match_count": sum(bool(result) for result in results),
+        },
     }
 
 
@@ -181,6 +222,9 @@ def main():
     args = parser.parse_args()
     rounds = max(1, args.rounds)
     configure_opencv_threads(cv2)
+    # OPEN-RC-20261015-PERF: bind this benchmark process to the machine-reported top
+    # core class (runtime-derived mask + read-back self-check; aborts on failure).
+    affinity_env = apply_benchmark_affinity()
 
     pixels = [
         ((x * 47 + y * 19) % 255, (x * 11 + y * 61) % 255, (x * 73 + y * 7) % 255)
@@ -200,6 +244,7 @@ def main():
             "rounds": rounds,
             "opencv": benchmark_opencv(rounds),
             "native_current": benchmark_native(str(ROOT), rounds, template_path),
+            **affinity_env,
         }
         if args.compare_native_base:
             report["native_comparison"] = benchmark_native(
@@ -217,13 +262,17 @@ def main():
     if args.assert_limits:
         failures = []
         if int(report.get("opencv_threads", 0)) > 2:
-            failures.append("opencv thread limit not applied")
+            failures.append(f"opencv thread limit not applied: {report.get('opencv_threads')}")
         for name, metric in report["opencv"].items():
             limit = 3000.0 if "4k" in name or "nine_scales" in name else 1500.0
             if float(metric["p95_ms"]) > limit:
                 failures.append(f"{name}>{limit}ms")
+            if not metric.get("correctness", {}).get("ok"):
+                failures.append(f"{name} returned an incorrect match")
         native = report["native_current"]
         if native.get("available"):
+            if not native.get("correctness", {}).get("ok"):
+                failures.append("native negative sample produced a false match")
             stats = native.get("stats", {})
             if stats and int(stats.get("captures", 0)) > rounds:
                 failures.append("native repeated captures per scale")

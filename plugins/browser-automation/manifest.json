@@ -1,0 +1,353 @@
+{
+  "format": "fukuaRPA.plugin",
+  "manifest_version": 1,
+  "id": "browser-automation",
+  "name": "浏览器自动化（网页 DOM 操作）",
+  "version": "1.1.0",
+  "author": "fukuaRPA 社区插件",
+  "plugin_type": "python_action",
+  "_note_p2": "P2 阶段：浏览器由插件自起 Playwright 驱动；顶层 permissions 恒为各动作 permissions 的并集，P3 宿主迁移时按动作实际需要扩充",
+  "api_version": 1,
+  "min_app_version": "1.0.0",
+  "entrypoint": "src/browser_automation/action.py:run",
+  "permissions": [
+    "process.launch_confirmed",
+    "screen.capture_region",
+    "files.user_selected",
+    "variables.write_declared"
+  ],
+  "dependencies": [],
+  "templates": [],
+  "actions": [
+    {
+      "id": "browser_navigate",
+      "name": "浏览器导航到网址",
+      "description": "启动（或复用）浏览器并导航到指定 URL，返回落地地址。",
+      "permissions": [
+        "process.launch_confirmed"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "网址"
+          },
+          "wait_until": {
+            "type": "string",
+            "enum": [
+              "load",
+              "domcontentloaded",
+              "networkidle"
+            ],
+            "default": "load"
+          },
+          "headless": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "default": 30000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "found": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "id": "browser_click",
+      "name": "点击网页元素",
+      "description": "按 文本/CSS/XPath 定位元素并点击，返回该元素信息（含包围盒坐标）。",
+      "permissions": [
+        "process.launch_confirmed"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string",
+            "enum": [
+              "text",
+              "css",
+              "xpath"
+            ],
+            "default": "text"
+          },
+          "value": {
+            "type": "string",
+            "title": "文本或选择器"
+          },
+          "index": {
+            "type": "integer",
+            "default": 0
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "element": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "id": "browser_fill",
+      "name": "填写输入框",
+      "description": "按定位方式找到输入框并填入文本（用于表单自动化）。",
+      "permissions": [
+        "process.launch_confirmed"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string",
+            "enum": [
+              "text",
+              "css",
+              "xpath"
+            ],
+            "default": "text"
+          },
+          "value": {
+            "type": "string",
+            "title": "文本或选择器"
+          },
+          "text": {
+            "type": "string",
+            "title": "要填入的文本"
+          },
+          "index": {
+            "type": "integer",
+            "default": 0
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "element": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "id": "browser_extract_text",
+      "name": "提取网页文本",
+      "description": "提取整页或某元素的可见文本（用于读取页面内容/校验）。",
+      "permissions": [
+        "process.launch_confirmed",
+        "variables.write_declared"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string",
+            "enum": [
+              "text",
+              "css",
+              "xpath"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "title": "可选：定位某元素"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "id": "browser_wait_for",
+      "name": "等待元素出现",
+      "description": "轮询等待指定元素出现，超时返回 found=false（用于异步页面）。",
+      "permissions": [
+        "process.launch_confirmed"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string",
+            "enum": [
+              "text",
+              "css",
+              "xpath"
+            ],
+            "default": "text"
+          },
+          "value": {
+            "type": "string",
+            "title": "文本或选择器"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "default": 5000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "id": "browser_get_attribute",
+      "name": "读取元素属性",
+      "description": "读取第 index 个匹配元素的某个属性值（如 href、value、id）。",
+      "permissions": [
+        "process.launch_confirmed",
+        "variables.write_declared"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string",
+            "enum": [
+              "text",
+              "css",
+              "xpath"
+            ],
+            "default": "text"
+          },
+          "value": {
+            "type": "string",
+            "title": "文本或选择器"
+          },
+          "attr": {
+            "type": "string",
+            "title": "属性名，如 href"
+          },
+          "index": {
+            "type": "integer",
+            "default": 0
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "id": "browser_screenshot",
+      "name": "网页截图",
+      "description": "截取整页或某元素并保存到指定路径，返回实际保存路径。",
+      "permissions": [
+        "process.launch_confirmed",
+        "screen.capture_region",
+        "files.user_selected"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "保存路径"
+          },
+          "by": {
+            "type": "string",
+            "enum": [
+              "text",
+              "css",
+              "xpath"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "title": "可选：截取某元素"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "3e013b60e558200acbe025f19ba27000464ae08c19d50a09f6a5ea4df0edb1d8"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "b550ed43e9152fa6572a20f9ae53ae0da0014f2f238ada8203951ee5dd28791c"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "fbb64eecc35d2d2f59c614960edbb35db40acdd834499db62e28c6360e0cbc24"
+    },
+    {
+      "path": "src/browser_automation/__init__.py",
+      "sha256": "260507c7193c7a6a80bc59d2770d0137f0ca240c4e51572ba7604681706817de"
+    },
+    {
+      "path": "src/browser_automation/action.py",
+      "sha256": "941345b57be90daa2c700d794984be59274530f20d53d184bbd48a0b0f13e627"
+    },
+    {
+      "path": "src/browser_automation/backend.py",
+      "sha256": "585d2a411860f3201275d7c11195205352cc620435fae93c540fde23e376fe30"
+    },
+    {
+      "path": "src/browser_automation/engine.py",
+      "sha256": "624a525600c3ba50a42e9b3200b16559171ce9c26480ece56003c739d1a7b1a4"
+    },
+    {
+      "path": "src/browser_automation/models.py",
+      "sha256": "71f1db0a720e6e7a53010a1b5119f086a7d54e2263cceb6c5ff482e9600999b5"
+    }
+  ]
+}

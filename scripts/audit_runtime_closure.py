@@ -1,15 +1,27 @@
-"""Audit x64 PE imports so an onedir release carries non-system dependencies."""
+"""Audit x64 PE imports so an onedir release carries non-system dependencies.
+
+FR-20260811-D15-6(建议·措辞更正)：导入分类规则与 verify_release 门禁一致——
+- ``bundled``：随 onedir 分发的本地依赖（PyInstaller 收集项）；
+- ``system``：命中系统 API 集前缀（SYSTEM_PREFIXES，如 api-ms-win-*/ext-ms-win-*）、
+  ALWAYS_SYSTEM_DLLS 白名单，或 Windows 系统目录（System32）实际扫描到的 DLL；
+- ``unresolved``：无法归类的导入，提示人工核对（发布门禁对 unresolved 判失败）。
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import tempfile
+import sys
 from pathlib import Path
 
 import pefile
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.hashutil import atomic_write_json  # noqa: E402
 
 PE_SUFFIXES = {".exe", ".dll", ".pyd"}
 MAX_PE_FILES = 5000
@@ -53,25 +65,8 @@ MSVC_RUNTIME_PREFIXES = (
 )
 
 
-def atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
-
-
 def system_dll_names() -> set[str]:
-    root = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"
     try:
         return {
             path.name.casefold()
@@ -79,6 +74,9 @@ def system_dll_names() -> set[str]:
             if path.is_file() and path.suffix.casefold() == ".dll"
         }
     except OSError:
+        sys.stderr.write(
+            "[audit] WARNING: System32 not readable, system DLL detection disabled\n"
+        )
         return set()
 
 
@@ -87,6 +85,20 @@ def classify_dependency(
     package_index: dict[str, list[str]],
     system_names: set[str],
 ) -> str:
+    """Classify a PE import into bundled / system / unresolved.
+
+    FR-20260809-1305: 判据边界（按序求值，先命中先返回）——
+    - ``bundled``：依赖名在打包载荷清单（package_index）内，由 fukuaRPA 自带；
+    - ``unresolved``：MSVC 运行库前缀（msvcp*/vcruntime*/concrt* 等），Windows
+      通常由系统/VC 运行库提供，不随包分发，故不算 bundled 但也无法静态确认为
+      system，归 unresolved 提示人工核对；
+    - ``system``：命中系统前缀（SYSTEM_PREFIXES，如 KERNEL32/USER32）或
+      ALWAYS_SYSTEM_DLLS 白名单，或扫描出的系统目录 DLL（system_names），
+      由操作系统保证存在；
+    - 其余一律 ``unresolved``：不在包内、无法确认系统提供。发布门禁对
+      unresolved **判失败**（ok=False → SystemExit；onefile 路径直接
+      RuntimeError），必须补充打包载荷或白名单规则后重审，不是可放行的告警。
+    """
     key = str(name or "").casefold()
     if key in package_index:
         return "bundled"

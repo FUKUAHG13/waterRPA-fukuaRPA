@@ -25,7 +25,12 @@ def compare_reports(baseline, reports):
         baseline_value = float(metric["baseline"])
         ratio = float(metric.get("max_ratio", 1.75))
         slack = float(metric.get("slack", 5.0))
-        current = value_at_path(reports[section], path)
+        try:
+            current = value_at_path(reports[section], path)
+        except KeyError as exc:
+            print(f"Missing key in {section}: {exc}")
+            failures.append(f"{section}: missing key {exc}")
+            continue
         allowed = max(baseline_value * ratio, baseline_value + slack)
         result = {
             "metric": f"{section}.{path}",

@@ -1,0 +1,8 @@
+# 本地 OCR 插件运行依赖（离线，无需联网）
+# 基础层：所有动作都需要（图像解码 / 数值数组）
+numpy>=1.24
+Pillow>=10.0
+
+# 默认 OCR 后端：rapidocr-onnxruntime（中英文，纯本地推理，模型随包安装）
+# 体积较大（含 onnxruntime 与模型），故拆成插件按需选装，不进主程序。
+rapidocr-onnxruntime>=1.4

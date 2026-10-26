@@ -1,0 +1,909 @@
+{
+  "format": "fukuaRPA.pyright_plugin_baseline",
+  "version": 1,
+  "pyright_config": "pyrightconfig.plugin_baseline.json",
+  "initial_total": 145,
+  "scope_files": [
+    "fukua_rpa/plugin_actions.py",
+    "fukua_rpa/plugin_host_client.py",
+    "fukua_rpa/plugin_host_process.py",
+    "fukua_rpa/plugin_manifest.py",
+    "fukua_rpa/plugin_package.py",
+    "fukua_rpa/plugin_protocol.py",
+    "fukua_rpa/plugin_registry.py"
+  ],
+  "comparison_key": [
+    "file",
+    "rule",
+    "message"
+  ],
+  "note": "FR-015 基线棘轮：仅豁免下表已确认条目；新增插件模块不得进入基线；现有模块不得新增或扩大报错；改动使条目不再复现时必须同步移除；清零后删除本文件与 pyrightconfig.plugin_baseline.json，并把 scope_files 中的模块纳入 pyrightconfig.strict.json。line/column 仅作定位信息，不参与比对。范围沿革：初始 3 模块 63 条 → 2026-09-20 D-9 采纳 (a) 后为整个 plugin_* 家族 145 条。out_of_scope_counts 仅记录 scope_files 之外既有模块的诊断数，用于禁止新增债务，不构成豁免。",
+  "total": 125,
+  "known_modules": [
+    "fukua_rpa/plugin_actions.py",
+    "fukua_rpa/plugin_host_client.py",
+    "fukua_rpa/plugin_host_process.py",
+    "fukua_rpa/plugin_manifest.py",
+    "fukua_rpa/plugin_package.py",
+    "fukua_rpa/plugin_protocol.py",
+    "fukua_rpa/plugin_registry.py"
+  ],
+  "out_of_scope_counts": {},
+  "diagnostics": [
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 168,
+      "column": 36,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"expected\" in function \"_config_type_ok\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 168,
+      "column": 50,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"t\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 202,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item_type\" is partially unknown Type of \"item_type\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 202,
+      "column": 21,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 203,
+      "column": 18,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 203,
+      "column": 36,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"iterable\" in function \"__new__\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 204,
+      "column": 50,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"expected\" in function \"_config_type_ok\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 205,
+      "column": 61,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"o\" in function \"__init__\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 209,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"key\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 209,
+      "column": 18,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item_value\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 210,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"sub\" is partially unknown Type of \"sub\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 210,
+      "column": 19,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 210,
+      "column": 29,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"key\" in function \"get\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 213,
+      "column": 59,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"schema\" in function \"_validate_config_value\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 253,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"props\" is partially unknown Type of \"props\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 253,
+      "column": 17,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 256,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"key\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 256,
+      "column": 18,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"value\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 257,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"prop\" is partially unknown Type of \"prop\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 257,
+      "column": 20,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)] | Overload[(key: Unknown, default: None = None, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 257,
+      "column": 30,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"key\" in function \"get\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 260,
+      "column": 42,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"name\" in function \"_validate_config_value\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 260,
+      "column": 47,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"schema\" in function \"_validate_config_value\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 263,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"required\" is partially unknown Type of \"required\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 263,
+      "column": 20,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 265,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"missing\" is partially unknown Type of \"missing\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 265,
+      "column": 30,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"r\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 269,
+      "column": 34,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"iterable\" in function \"join\" Argument type is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 293,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"task\" is partially unknown Type of \"task\" is \"dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 361,
+      "column": 38,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"get_log_config\" is partially unknown Type of \"get_log_config\" is \"() -> dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 363,
+      "column": 26,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"o\" in function \"__new__\""
+    },
+    {
+      "file": "fukua_rpa/plugin_actions.py",
+      "line": 363,
+      "column": 26,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, default: None = None, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_host_process.py",
+      "line": 138,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"key\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_host_process.py",
+      "line": 138,
+      "column": 14,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"value\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_host_process.py",
+      "line": 143,
+      "column": 37,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is unknown Argument corresponds to parameter \"o\" in function \"__init__\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 100,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 113,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 207,
+      "column": 12,
+      "rule": "reportUnnecessaryIsInstance",
+      "message": "Unnecessary isinstance call; \"str\" is always an instance of \"str\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 236,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"permissions\" is partially unknown Type of \"permissions\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 237,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"input_schema\" is partially unknown Type of \"input_schema\" is \"dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 238,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"output_schema\" is partially unknown Type of \"output_schema\" is \"dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 255,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"steps\" is partially unknown Type of \"steps\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 340,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"dependencies\" is partially unknown Type of \"dependencies\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 344,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"extra\" is partially unknown Type of \"extra\" is \"dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 392,
+      "column": 16,
+      "rule": "reportUnnecessaryIsInstance",
+      "message": "Unnecessary isinstance call; \"Mapping[str, Any]\" is always an instance of \"Mapping[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 554,
+      "column": 12,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"obj\" in function \"len\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 558,
+      "column": 16,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 558,
+      "column": 34,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"iterable\" in function \"__new__\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 562,
+      "column": 13,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 567,
+      "column": 30,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 569,
+      "column": 13,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 571,
+      "column": 46,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 572,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"input_schema\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 572,
+      "column": 24,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 573,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"output_schema\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 573,
+      "column": 25,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 586,
+      "column": 35,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"map\" in function \"__init__\" Argument type is \"Mapping[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 587,
+      "column": 36,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"map\" in function \"__init__\" Argument type is \"Mapping[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 597,
+      "column": 12,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"obj\" in function \"len\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 601,
+      "column": 16,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 601,
+      "column": 34,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"iterable\" in function \"__new__\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 605,
+      "column": 13,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 611,
+      "column": 13,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 614,
+      "column": 13,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 616,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"steps\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 616,
+      "column": 17,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 624,
+      "column": 28,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"iterable\" in function \"__init__\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 634,
+      "column": 12,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"obj\" in function \"len\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 638,
+      "column": 16,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 638,
+      "column": 34,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"iterable\" in function \"__new__\" Argument type is \"list[Unknown] | tuple[Unknown, ...]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 641,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"path\" is partially unknown Type of \"path\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 641,
+      "column": 16,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 642,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"sha256\" is partially unknown Type of \"sha256\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 642,
+      "column": 18,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_manifest.py",
+      "line": 662,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"item\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_package.py",
+      "line": 91,
+      "column": 12,
+      "rule": "reportUnnecessaryIsInstance",
+      "message": "Unnecessary isinstance call; \"str\" is always an instance of \"str\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 233,
+      "column": 12,
+      "rule": "reportUnnecessaryIsInstance",
+      "message": "Unnecessary isinstance call; \"Mapping[str, Any]\" is always an instance of \"Mapping[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 256,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"inner_payload\" is partially unknown Type of \"inner_payload\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 256,
+      "column": 25,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 262,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"inner_payload\" is partially unknown Type of \"inner_payload\" is \"dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 262,
+      "column": 34,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"map\" in function \"__init__\" Argument type is \"Mapping[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 263,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"normalized_payload\" is partially unknown Type of \"normalized_payload\" is \"dict[str, str | int | dict[Unknown, Unknown]]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 264,
+      "column": 36,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 265,
+      "column": 37,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 266,
+      "column": 39,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 267,
+      "column": 39,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 268,
+      "column": 41,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 271,
+      "column": 12,
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"<\" not supported for types \"str | int | dict[Unknown, Unknown]\" and \"Literal[0]\" Operator \"<\" not supported for types \"str\" and \"Literal[0]\" Operator \"<\" not supported for types \"dict[Unknown, Unknown]\" and \"Literal[0]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 274,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"ok\" is partially unknown Type of \"ok\" is \"Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 274,
+      "column": 14,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 277,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"normalized_payload\" is partially unknown Type of \"normalized_payload\" is \"dict[str, str | bool | Unknown | None]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 278,
+      "column": 36,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 279,
+      "column": 37,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 281,
+      "column": 23,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 282,
+      "column": 22,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 286,
+      "column": 36,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 287,
+      "column": 37,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_protocol.py",
+      "line": 357,
+      "column": 12,
+      "rule": "reportUnnecessaryIsInstance",
+      "message": "Unnecessary isinstance call; \"bytes | bytearray\" is always an instance of \"bytes | bytearray\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 118,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"permissions\" is partially unknown Type of \"permissions\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 119,
+      "column": 5,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"dependencies\" is partially unknown Type of \"dependencies\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 125,
+      "column": 13,
+      "rule": "reportUnnecessaryIsInstance",
+      "message": "Unnecessary isinstance call; \"str\" is always an instance of \"str\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 248,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"new_records\" is partially unknown Type of \"new_records\" is \"dict[Unknown, Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 248,
+      "column": 22,
+      "rule": "reportMissingTypeArgument",
+      "message": "Expected type arguments for generic class \"dict\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 289,
+      "column": 21,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"_verify_installed_files\" is partially unknown Type of \"_verify_installed_files\" is \"(plugin_id: str, manifest: PluginManifest, records: dict[Unknown, Unknown] | None = None) -> None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 298,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"corrupt_set\" is partially unknown Type of \"corrupt_set\" is \"set[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 299,
+      "column": 21,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"pid\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 299,
+      "column": 26,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"rec\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 299,
+      "column": 56,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"corrupt\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 302,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"record\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 303,
+      "column": 16,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"corrupt\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 303,
+      "column": 34,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"manifest\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 305,
+      "column": 13,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"missing\" is partially unknown Type of \"missing\" is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 307,
+      "column": 21,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"dep\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 307,
+      "column": 28,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"dependencies\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 307,
+      "column": 28,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"manifest\" is unknown"
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 310,
+      "column": 46,
+      "rule": "reportUnknownArgumentType",
+      "message": "Argument type is partially unknown Argument corresponds to parameter \"o\" in function \"__new__\" Argument type is \"list[Unknown]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 322,
+      "column": 57,
+      "rule": "reportUnknownParameterType",
+      "message": "Type of parameter \"records\" is partially unknown Parameter type is \"dict[Unknown, Unknown] | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 322,
+      "column": 66,
+      "rule": "reportMissingTypeArgument",
+      "message": "Expected type arguments for generic class \"dict\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 334,
+      "column": 9,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"target\" is partially unknown Type of \"target\" is \"dict[Unknown, Unknown] | dict[str, _Record]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 339,
+      "column": 17,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"rec\" is partially unknown Type of \"rec\" is \"_Record | Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 339,
+      "column": 23,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, default: None = None, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)] | Overload[(key: str, default: None = None, /) -> (_Record | None), (key: str, default: _Record, /) -> _Record, (key: str, default: _T@get, /) -> (_Record | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 347,
+      "column": 17,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"rec\" is partially unknown Type of \"rec\" is \"_Record | Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 347,
+      "column": 23,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, default: None = None, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)] | Overload[(key: str, default: None = None, /) -> (_Record | None), (key: str, default: _Record, /) -> _Record, (key: str, default: _T@get, /) -> (_Record | _T@get)]\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 353,
+      "column": 17,
+      "rule": "reportUnknownVariableType",
+      "message": "Type of \"rec\" is partially unknown Type of \"rec\" is \"_Record | Unknown | None\""
+    },
+    {
+      "file": "fukua_rpa/plugin_registry.py",
+      "line": 353,
+      "column": 23,
+      "rule": "reportUnknownMemberType",
+      "message": "Type of \"get\" is partially unknown Type of \"get\" is \"Overload[(key: Unknown, default: None = None, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)] | Overload[(key: str, default: None = None, /) -> (_Record | None), (key: str, default: _Record, /) -> _Record, (key: str, default: _T@get, /) -> (_Record | _T@get)]\""
+    }
+  ]
+}

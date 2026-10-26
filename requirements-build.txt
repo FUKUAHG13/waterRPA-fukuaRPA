@@ -1,0 +1,6 @@
+# 构建/打包专用依赖（运行时不需要）。
+# 安装本文件即获得完整构建环境：全部运行时依赖 + 打包工具。
+# 运行时依赖见 requirements.txt；SBOM 作用域分类由 scripts/create_sbom.py 硬编码（PyInstaller/pefile 标记为 build）。
+-r requirements.txt
+pyinstaller==6.19.0
+pefile==2024.8.26

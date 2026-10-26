@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOperatorIssue=false, reportIndexIssue=false, reportCallIssue=false
 """Qt worker for responsive offline release verification."""
 
 from __future__ import annotations
@@ -17,7 +18,10 @@ class PayloadVerificationThread(QThread):
         self.root = Path(root)
 
     def run(self):
-        report = verify_payload(
-            self.root, cancelled=lambda: self.isInterruptionRequested()
-        )
+        try:
+            report = verify_payload(
+                self.root, cancelled=lambda: self.isInterruptionRequested()
+            )
+        except Exception as exc:
+            report = {"ok": False, "error": str(exc), "checks": []}
         self.report_ready.emit(report)

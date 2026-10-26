@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 from fukua_rpa.config_schema import default_profile_config
 from fukua_rpa.engine import RPAEngine
 from fukua_rpa.run_config import EngineRunConfig, RunConfigError
-from fukua_rpa.scene_wake import make_scene_signature
+from fukua_rpa.vision.scene_wake import make_scene_signature
 
 
 class SceneWakeEngineTests(unittest.TestCase):

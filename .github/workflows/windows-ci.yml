@@ -1,0 +1,203 @@
+name: Windows 源码验证与测试构建
+
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  push:
+    branches:
+      - main
+      - development
+      - fukuaRPA-testing
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-quality:
+    name: Windows x64 公开源码校验（不替代正式门禁）
+    runs-on: windows-2022
+    timeout-minutes: 45
+    outputs:
+      private-inputs: ${{ steps.private-inputs.outputs.available }}
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 CPython 3.14 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          architecture: x64
+          cache: pip
+
+      - name: 安装运行、构建与测试依赖
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements-build.txt pytest ruff hypothesis pyright==1.1.411 PyYAML==6.0.3
+
+      - name: 检查维护者私有验证资料是否齐备
+        id: private-inputs
+        shell: pwsh
+        run: |
+          $available = python -c "from pathlib import Path; from scripts.private_release_inputs import REQUIRED_INPUTS; print('true' if all((Path.cwd()/p).is_file() for p in REQUIRED_INPUTS) else 'false')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "available=$available" >> $env:GITHUB_OUTPUT
+          if ($available -ne "true") {
+            Write-Host "::warning::公开快照不含维护者私有验证资料；完整源码测试、UI规范和冻结构建本次未执行，不得视为正式门禁通过。"
+            "公开源码校验只执行静态检查、公开契约测试与插件检查；完整维护者验证未执行。" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: 重建并核验原生核心
+        shell: powershell
+        run: >-
+          powershell -ExecutionPolicy Bypass
+          -File native_core/build_native_core.ps1
+
+      - name: Ruff 静态检查
+        run: python -m ruff check fukua_rpa tests scripts fukuaRPA.py
+
+      # ADV-20261006-019: FR-015 棘轮接入 CI。只校验既有基线与当前状态是否一致，
+      # 不允许 --write、不允许增长（增长须维护者显式批准并同步 INITIAL_TOTAL）。
+      # 脚本在 pyright 不可用时返回 2；此处按"可选依赖缺失"记为跳过并告警，
+      # 不得把未执行的门禁当作通过。
+      - name: FR-015 插件基线棘轮
+        shell: pwsh
+        run: |
+          python scripts/pyright_plugin_baseline.py
+          if ($LASTEXITCODE -eq 2) {
+            Write-Host "::warning::pyright 不可用，FR-015 棘轮本轮未执行（不得视为通过）。"
+            exit 0
+          }
+          exit $LASTEXITCODE
+
+      - name: UI 新增代码规范门禁
+        if: steps.private-inputs.outputs.available == 'true'
+        shell: pwsh
+        env:
+          UI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ($env:UI_BASE_REF -and $env:UI_BASE_REF -ne "0000000000000000000000000000000000000000") {
+            python scripts/check_ui_conventions.py --changed --base-ref $env:UI_BASE_REF --strict
+          } else {
+            # 未取得可靠基线时，--changed 的默认基线会解析为上游（通常与 HEAD 相同），
+            # 差异为 0 行、门禁静默通过。这是增量检查语义下的设计行为（非缺陷），
+            # 因此只发出告警，不得让 --strict 对 0 行情况一律失败。
+            Write-Host "::warning::未取得可靠的 UI 规范基线（UI_BASE_REF 为空或全零）。本次 --changed 检查可能只覆盖 0 行，门禁未实际生效；首次推送、定时任务或手动触发时属预期行为。"
+            python scripts/check_ui_conventions.py --changed --strict
+          }
+
+      - name: 运行受影响源码测试
+        if: steps.private-inputs.outputs.available == 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python scripts/run_impacted_tests.py --tests-only
+
+      - name: 运行公开源码契约测试
+        if: steps.private-inputs.outputs.available != 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m pytest tests/test_private_release_inputs.py
+          tests/test_performance_comparison.py tests/test_benchmark_util_percentile.py
+          tests/test_runtime_pruning.py -q --no-header -p no:cacheprovider
+
+      # Review item #3: plugin tests are part of the main suite. Installed
+      # best-effort so a missing optional heavy dependency (e.g. playwright
+      # browsers) never breaks the core CI; the run remains observable.
+      - name: 安装插件依赖（可选）
+        shell: cmd
+        continue-on-error: true
+        run: >-
+          for /r plugins %%d in (requirements.txt) do python -m pip install --disable-pip-version-check -r "%%d"
+
+      - name: 运行插件单元测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+        continue-on-error: true
+        run: python -m pytest plugins --import-mode=importlib -q --no-header -p no:cacheprovider
+
+      # P1-T6: 插件契约 --validate 门禁（覆盖契约回归，护 P1-4 修复）。
+      # 每个插件 tools/build_plugin.py --validate 会 import fukua_rpa.plugin_manifest
+      # 并跑 PluginManifest.parse_json；契约违规以非零退出码使本步失败。
+      - name: 插件契约 --validate 门禁
+        shell: cmd
+        run: >-
+          for %%d in (ocr-local browser-automation office-docs screen-recorder) do python plugins\%%d\tools\build_plugin.py --validate || exit /b 1
+
+  onedir-build:
+    name: Windows x64 多文件测试包
+    needs: source-quality
+    if: github.event_name == 'workflow_dispatch' && needs.source-quality.outputs.private-inputs == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 配置 CPython 3.14 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          architecture: x64
+          cache: pip
+
+      - name: 安装构建依赖
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements-build.txt pytest hypothesis ruff pyright==1.1.411 PyYAML==6.0.3
+
+      - name: 生成多文件测试包
+        run: python scripts/build_release.py --format onedir
+
+      - name: 上传私有 CI 测试产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: fukuaRPA-Windows-x64-${{ github.sha }}
+          path: |
+            dist/fukuaRPA_v*/**
+            dist/fukuaRPA_v*_SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  nightly-onedir-build:
+    name: Nightly 冻结包构建验证
+    needs: source-quality
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.source-quality.outputs.private-inputs == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 配置 CPython 3.14 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          architecture: x64
+          cache: pip
+
+      - name: 安装构建依赖
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements-build.txt
+
+      - name: 生成多文件测试包（跳过质量门禁）
+        run: python scripts/build_release.py --skip-quality
+
+      - name: 核验构建产物
+        shell: pwsh
+        run: |
+          # FR-20261003-607: 产物名为 fukuaRPA_<version>.exe（BUILD_NAME）。
+          # 旧的固定文件名谓词永不匹配，使该 step 恒定失败，故改为按实际命名枚举。
+          $exe = Get-ChildItem -Path "dist" -Recurse -Filter "fukuaRPA_*.exe" -ErrorAction SilentlyContinue
+          if (-not $exe) { Write-Error "Build artifact not found under dist/"; exit 1 }
+          $exe | ForEach-Object { Write-Host "Build verified: $($_.FullName)" }

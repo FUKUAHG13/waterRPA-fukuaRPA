@@ -2,7 +2,7 @@ import unittest
 
 from PIL import Image, ImageDraw
 
-from fukua_rpa.scene_wake import (
+from fukua_rpa.vision.scene_wake import (
     compare_scene_sets,
     compare_scene_signatures,
     make_scene_signature,

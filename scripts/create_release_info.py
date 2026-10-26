@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -17,30 +15,27 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fukua_rpa.constants import PROJECT_RELEASES_URL  # noqa: E402
+from scripts.build_identity import require_matching_evidence  # noqa: E402
+from scripts.hashutil import atomic_write_json, hash_file  # noqa: E402
+from scripts.runtime_pruning import find_uiautomation_x64_dll  # noqa: E402
+
+_AUTHENTICODE_MESSAGES = {
+    "Valid": "Authenticode signature is valid.",
+    "NotSigned": "No Authenticode signature is present.",
+    "HashMismatch": "Authenticode signature does not match the current file.",
+    "NotTrusted": "Authenticode signature is not trusted on this machine.",
+    "NotSupportedFileFormat": "This file format does not support Authenticode.",
+    "Incompatible": "Authenticode signature is incompatible with this file.",
+    "UnknownError": "Authenticode status could not be determined.",
+}
 
 
-def hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def atomic_write_json(path: Path, data: dict) -> None:
-    descriptor, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+def _safe_authenticode_message(status: str) -> str:
+    """Return stable release metadata without PowerShell's local file path."""
+    return _AUTHENTICODE_MESSAGES.get(
+        status,
+        "Authenticode status was reported by Windows.",
     )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.remove(temp_name)
 
 
 def authenticode_status(executable: Path) -> dict:
@@ -53,11 +48,26 @@ def authenticode_status(executable: Path) -> dict:
         "subject=[string]$s.SignerCertificate.Subject;"
         "thumbprint=[string]$s.SignerCertificate.Thumbprint}|ConvertTo-Json -Compress"
     )
+    # FR-20260811-D15-1: 用绝对路径调用 powershell，避免发布机 PATH 被劫持时
+    # 执行到被替换的伪 powershell.exe（签名查询属于发布元数据，不应依赖 PATH）。
+    # INVARIANT: 变量名写成规范大写 `SYSTEMROOT`。Windows 的 `os.environ` 键不区分
+    # 大小写（`nt.environ` 统一转大写），因此与历史写法 `SystemRoot` 的查表结果
+    # 逐字节相同；本脚本只在 Windows 上运行（需要 System32\WindowsPowerShell）。
+    powershell = os.path.join(
+        os.environ.get("SYSTEMROOT", r"C:\Windows"),
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+    )
+    if not os.path.isfile(powershell):
+        # 极少数系统 PowerShell 路径缺失时的显式回退；正常发行路径应命中上方绝对路径。
+        powershell = "powershell"
     try:
         environment = os.environ.copy()
         environment["FUKUA_RELEASE_EXE"] = str(executable)
         completed = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
+            [powershell, "-NoProfile", "-Command", script],
             check=True,
             capture_output=True,
             text=True,
@@ -67,16 +77,29 @@ def authenticode_status(executable: Path) -> dict:
             env=environment,
         )
         result = json.loads(completed.stdout.strip())
+        status = str(result.get("status") or "Unknown")
         return {
-            "status": str(result.get("status") or "Unknown"),
-            "message": str(result.get("message") or ""),
+            "status": status,
+            # SAFETY: StatusMessage embeds the absolute build path for unsigned
+            # files. Release metadata records only a stable, path-free summary.
+            "message": _safe_authenticode_message(status),
             "signer_subject": str(result.get("subject") or ""),
             "signer_thumbprint": str(result.get("thumbprint") or ""),
         }
-    except Exception as error:
+    except (
+        # FR-20260811-D15-003: TimeoutExpired 继承 SubprocessError，不是
+        # CalledProcessError/OSError 子类；不捕获会被穿透中断整条发布链。
+        # 签名状态属元数据，超时/失败一律降级为 Unavailable，不阻断发布。
+        subprocess.TimeoutExpired,
+        subprocess.CalledProcessError,
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
         return {
             "status": "Unavailable",
-            "message": str(error),
+            # Exceptions may contain the executable's absolute path as well.
+            "message": "Authenticode status could not be queried.",
             "signer_subject": "",
             "signer_thumbprint": "",
         }
@@ -86,26 +109,63 @@ def build_release_info(release_dir: Path, build_name: str) -> dict:
     executable = release_dir / f"{build_name}.exe"
     build_info = release_dir / "BUILD_INFO.json"
     sbom = release_dir / "SBOM.cdx.json"
-    for path in (executable, build_info, sbom):
+    runtime_closure = release_dir / "RUNTIME_CLOSURE.json"
+    quality_report = release_dir / "QUALITY_REPORT.json"
+    for path in (executable, build_info, sbom, runtime_closure, quality_report):
         if not path.is_file():
             raise RuntimeError(f"Required release file not found: {path}")
     build_data = json.loads(build_info.read_text(encoding="utf-8"))
+    quality_data = json.loads(quality_report.read_text(encoding="utf-8"))
+    try:
+        identity = require_matching_evidence(build_data, quality_data)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    if identity["fields"]["build_name"] != build_name:
+        raise RuntimeError("构建记录与发行名称不一致")
+    quality_build_record = quality_data.get("build_record", {})
+    if quality_build_record.get("sha256") != hash_file(build_info):
+        raise RuntimeError("质量报告引用的构建记录已发生变化")
+    sbom_data = json.loads(sbom.read_text(encoding="utf-8"))
+    sbom_metadata = sbom_data.get("metadata", {})
+    sbom_component = sbom_metadata.get("component", {})
+    sbom_properties = {
+        str(item.get("name")): str(item.get("value"))
+        for item in sbom_metadata.get("properties", [])
+        if isinstance(item, dict)
+    }
+    if sbom_component.get("version") != str(
+        build_data.get("application_version", "")
+    ).lstrip("v"):
+        raise RuntimeError("SBOM 与构建记录的版本不一致")
+    if sbom_properties.get("fukuaRPA.build_name") != build_name:
+        raise RuntimeError("SBOM 与构建记录的构建名称不一致")
+    if sbom_properties.get("fukuaRPA.build_id") != identity["build_id"]:
+        raise RuntimeError("SBOM 与构建记录的 build_id 不一致")
+    if sbom_properties.get("fukuaRPA.source_sha256") != identity["fields"][
+        "source_sha256"
+    ]:
+        raise RuntimeError("SBOM 与构建记录的源码指纹不一致")
+    # The uiautomation X64 helper DLL ships under <release>/_internal/
+    # uiautomation/bin/. Its exact filename embeds a VC runtime label
+    # (e.g. "VC140") that can change between releases, so discover it
+    # dynamically rather than hardcoding the full name.
+    uia_helper_path = find_uiautomation_x64_dll(
+        release_dir / "_internal" / "uiautomation"
+    )
+    if uia_helper_path is None:
+        raise RuntimeError(
+            "Required code payload not found: uiautomation X64 helper DLL under "
+            f"{release_dir / '_internal' / 'uiautomation'}"
+        )
     code_paths = (
         ("main_executable", executable),
         ("native_core", release_dir / "_internal" / "fukua_rpa_core.dll"),
-        (
-            "uia_bitmap_helper",
-            release_dir
-            / "_internal"
-            / "uiautomation"
-            / "bin"
-            / "UIAutomationClient_VC140_X64.dll",
-        ),
+        ("uia_bitmap_helper", uia_helper_path),
     )
     code_payloads = []
     for role, path in code_paths:
         if not path.is_file():
-            continue
+            raise RuntimeError(f"Required code payload not found: {path}")
         code_payloads.append(
             {
                 "role": role,
@@ -116,13 +176,22 @@ def build_release_info(release_dir: Path, build_name: str) -> dict:
             }
         )
     executable_record = code_payloads[0]
-    runtime_closure = release_dir / "RUNTIME_CLOSURE.json"
+    packaged_native_sha256 = next(
+        item["sha256"] for item in code_payloads if item["role"] == "native_core"
+    )
+    if packaged_native_sha256 != build_data.get("native_core", {}).get("sha256"):
+        raise RuntimeError("包内原生核心与构建记录不一致")
     return {
         "format": "fukuaRPA_release_info",
         "format_version": 1,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "application_version": build_data.get("application_version", ""),
         "build_name": build_name,
+        "build_mode": build_data.get("build_mode", ""),
+        "source_sha256": build_data.get("source_sha256", ""),
+        "build_id": identity["build_id"],
+        "build_identity": identity["fields"],
+        "private_validation_inputs": build_data.get("private_validation_inputs"),
         "target": build_data.get("target", "Windows x64 onedir portable"),
         "supported_windows": build_data.get("supported_windows", ""),
         "network_on_startup": False,
@@ -142,11 +211,14 @@ def build_release_info(release_dir: Path, build_name: str) -> dict:
             "source_sha256": build_data.get("source_sha256", ""),
         },
         "sbom": {"path": sbom.name, "sha256": hash_file(sbom)},
-        "runtime_closure": (
-            {"path": runtime_closure.name, "sha256": hash_file(runtime_closure)}
-            if runtime_closure.is_file()
-            else {}
-        ),
+        "runtime_closure": {
+            "path": runtime_closure.name,
+            "sha256": hash_file(runtime_closure),
+        },
+        "quality_report": {
+            "path": quality_report.name,
+            "sha256": hash_file(quality_report),
+        },
     }
 
 

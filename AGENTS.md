@@ -1,41 +1,120 @@
-# Repository guidance
+# 仓库指南
 
-This file gives human and automated contributors a compact map of the repository. It describes the current mainline implementation, not a restriction on what a fork or future variant may explore.
+本文件为人类贡献者和自动化贡献者提供一份精简的仓库地图。它描述当前主线实现，但不限制派生项目或未来变体可以探索的方向。
 
-## Read first
+当前仓库及其私有 `origin` 是 fukuaRPA 的权威开发主线。`localsrc` 或其他旧 waterRPA 工作区只用于
+查阅历史实现，不得把新主线反向搬回旧代码树，也不得以旧工作区覆盖当前仓库；只有用户明确要求制作
+历史分支、移植补丁或恢复旧版本时才允许例外。
 
-- `README.md` explains the product and public entry points.
-- `ARCHITECTURE.md` records module boundaries, runtime invariants, and release checks.
-- `CONTEXT.md` defines the domain vocabulary used by code and tests.
-- `ROADMAP.md` lists possible future directions; roadmap entries are not release commitments.
+## 开始前必读
 
-## Change discipline
+维护者指定公开发行快照暂不包含 `docs/` 与部分私有验证输入。私有主线保留以下资料和全部规则；
+在公开快照中看不到资料时，不得声称已阅读或已满足内部验证。维护者正式构建须在隔离目录配齐
+私有验证输入并绑定其指纹，仍执行原检查与阈值，不能因为资料未公开而跳过正式门禁。
 
-- Prefer the existing module boundaries under `fukua_rpa/`; do not move business logic back into the entry point or UI widgets.
-- Keep edits scoped to the requested behavior. Preserve unrelated local changes and user data.
-- Never commit `config.ini`, credentials, imported user images, logs, crash reports, build output, or other machine-local state.
-- Preserve privacy boundaries: ordinary and secret text must not enter logs, diagnostics, traces, or exported profiles.
-- Keep optional native acceleration behind capability checks and a working Python/OpenCV fallback unless a separately documented variant intentionally chooses another contract.
-- Product variants such as lightweight, legacy, or experimental builds are welcome as explicit proposals. Isolate their dependency and packaging differences instead of silently changing the behavior of the current mainline edition.
+- `docs/设计基准.md` 是当前主线的产品意图基准，说明支持范围、核心语义、明确取舍和“故意如此”的行为。
+- `docs/代码审查基准.md` 是审查准入基准，规定什么证据可以称为缺陷、如何分级，以及何时应停止审查循环。
+- `docs/开发备份与恢复规范.md` 规定私有远程备份的强制时点、未完成代码保存、恢复核验和责任角色；开始实施与返修前必须阅读。
+- `docs/UI开发规范.md` 是界面新增和修改的实现基准，规定主题、布局、DPI、生命周期、例外和静态门禁。
+- `README.md` 说明产品定位和公开入口。
+- `ARCHITECTURE.md` 记录模块边界、运行时不变量和发布检查。
+- `CONTEXT.md` 定义代码与测试使用的领域术语。
+- `ROADMAP.md` 列出可能的未来方向；路线图条目不等于发布承诺。
 
-## Verification
+这些文档按职责而不是简单的文件顺序解释：`AGENTS.md` 约束协作、仓库和发布操作；
+`docs/设计基准.md` 记录当前产品意图；`docs/代码审查基准.md` 约束审查证据与结论；
+`docs/UI开发规范.md` 把界面设计意图细化为可执行的组件和代码规则；
+`ARCHITECTURE.md` 记录当前实现必须满足的技术不变量；`CONTEXT.md` 记录当前产品事实与术语；
+已接受的 ADR 说明某项决策及原因，后写且明确取代旧决定的 ADR 优先于旧 ADR；`README.md` 是面向
+公众的稳定产品说明；`ROADMAP.md` 仅是候选方向。历史文档与当前实现冲突时，以当前技术不变量和
+较新的已接受决定为准；若按职责仍无法消除冲突，必须指出冲突并询问用户，不能自行选择方便的一方。
 
-- During development, run focused tests for the changed behavior and nearby contracts.
-- Before publishing a binary release, run the complete release verification, including unit tests, Ruff, native rebuild, performance gates, soak tests, frozen startup checks, runtime-closure audit, and archive verification.
-- Add or update tests when changing configuration defaults, persistence, migration, execution parameters, workflow behavior, packaging, or security boundaries.
+## 修改纪律
 
-## Packaging
+- 优先遵循 `fukua_rpa/` 下现有的模块边界；不得把业务逻辑重新移回程序入口或 UI 控件。
+- 修改或新增 `fukua_rpa/ui/` 代码前必须阅读 `docs/UI开发规范.md`。优先复用 `theme.py`、
+  `components.py` 的主题 token、响应式布局、内容适配按钮、帮助按钮和生命周期入口；新增固定几何、局部 QSS、
+  硬编码颜色/间距/字号必须在目标代码附近写带具体理由的 `UI-CONVENTION` 例外，不得用空泛注释绕过门禁。
+- 修改范围应限于用户要求的行为。保留无关的本地修改和用户数据。
+- 收到用户提示词后，先在内部整理为明确的目标、修改范围、必须保留的行为、禁止事项、验证范围和是否打包/提交/推送，再执行。口语化、重复或不影响结果的赘述可以直接规范化；只要仍存在会导致不同用户可见行为、数据风险、兼容边界或工作量显著变化的歧义、冲突或缺失条件，就必须先向用户指出并询问，得到足够清晰的答复后才能修改。不得用自行猜测代替关键产品决定。
+- 用户首次提出任何 Bug 反馈或功能改进想法时，默认只进入评估回合：说明现状判断、必要性、实现难度、体积影响、性能影响和回归风险，不修改代码、不打包。只有在该评估之后，用户再次明确表示“开始修改”“按建议修改”或同等含义时，才进入实施；用户明确改变这条协作规则时除外。
+- 用户明确要求修改后，除非用户指定必须分几轮、仅完成某一阶段、先暂停，或本轮只规划/评估，否则由贡献者自行决定阶段划分、推进顺序和本轮合理进度，并持续自主推进到可验证、可继续的完成点；不得把“可分阶段”理解为每完成一个小步骤都要停下来等待确认。若一次合理推进仍无法完成全部范围，应明确记录已完成内容、剩余内容和继续入口。
+- **同角色连续推进**（维护者 2026-10-03 批准）：审查流程的下一阶段仍由同一实际任务、同一角色负责，路由与前置门禁有效且已有授权覆盖时，自动继续，不输出要求用户再发给自己的提示词。例如原 A 全面接受 B 后连续完成争议回应、权威报告与改进路线；已有代码实施授权且仍由该 A 实施时可继续实施。每阶段仍须保存规定报告并重新核对路由、批准来源和验证范围。换到独立 B/C、换实际任务、需要产品裁定、缺少实施授权、环境受阻或到达 `stop` 时停止；不能用改角色名称或内部子线程代替独立复核。旧生成启动块的“一条消息只做一个阶段”通用措辞由本规则取代；用户明确指定“仅评估”“只完成某阶段”或暂停的限制仍有效。
+- 每次对程序代码实施修改时，必须先制定足以覆盖需求、保留行为和验证范围的计划并完成开发；开发完成后，启动一个不直接修改代码的独立审查线程，从需求完整性、逻辑正确性、边界情况、代码质量、测试覆盖和实际运行结果六个方面验证本轮改动。审查线程应把问题整理为修复清单交回主线程，由主线程修复后再交给同一个 `agent_id` 复验；持续循环，直到审查通过，或明确记录无法继续验证的阻塞条件。
+- 当前独立审查使用 `multi_agent_v1.spawn_agent` 子代理接口。所有初审和复验必须显式传入 `model=gpt-6.1-sol`（维护者 2026-10-09 指定，取代旧 5.6-luna 要求）、`reasoning_effort=max` 与快速服务档 `service_tier=priority`；这些是当前接口的实际参数名。不得套用用户任务线程等其他接口的 `thinking`、`hostId`、`afterCursor` 等字段，也不得静默换模型、降低推理强度或关闭快速服务档。若当前环境不支持任一参数，不得静默降级或跳过，按下面“独立审查接口的长期替代规则”执行。历史实际模型记录保留，不追溯改写。
+- 使用当前 `multi_agent_v1.wait_agent` 等待审查结果时，每次传入其最大 `timeout_ms=3600000`（60 分钟）。返回 `pending_init` 或 `running`，以及部分输出、长时间思考、暂时没有最终文本或单次等待到期，都表示继续等待同一 `agent_id`，不得中断、关闭、重启或设置累计等待上限。只有收到 `completed` 后才评估审查结论；`errored`、`interrupted`、`shutdown` 或 `not_found` 且没有可用最终结论时只能记为独立复核受阻，不能标记通过。用户要求停止时应立即停止并记录“用户终止”，同样不能标记复验通过。初审返回修复清单后不要关闭代理，应保留它供同一代理复验；只有整个修复与复验循环结束、用户要求停止或代理已不可恢复时才关闭。
+- 不得以主线程自审冒充独立复验。审查者对工具能力、参数或状态的判断也必须核对当前实际工具 schema；不能用另一套线程接口的字段或上限推翻已经成功执行的调用。
+- **独立审查接口的长期替代规则**（维护者 2026-09-22 批准；取代按轮次、阶段或提交逐次申请同类例外的做法）：当运行环境不提供 `multi_agent_v1` 或其中任一指定参数（`model`、`reasoning_effort`、`service_tier`）时，**允许**以“实施任务 A + 独立复核任务 B”的双任务方式完成独立审查，持续适用于后续审查轮次、修复后的新提交，以及初审、独立复核、修复复验和返修复验；修复后的复验**优先沿用原 B**（创建本轮 `02_独立复核.md` 的任务），不得由 A、其他新任务或内部子线程冒充。执行时必须**如实记录实际使用的模型、工具与验证方式**；独立性、覆盖范围、证据标准、必要测试和六个必审维度仍按 `docs/代码审查基准.md` 执行，主线程自审不能冒充独立复核。**仅缺少指定接口或参数不再构成阻断条件**；真正缺少独立复核、必要证据或测试条件时，仍须明确记录实际阻塞并说明所需决定。本规则**不豁免实机验证，也不豁免正式发布门禁**。有该接口时，上面三条的参数、等待上限与代理保留要求仍然适用；无该接口时这些要求不适用。历史例外记录（`EXC-REVIEW-001` ~ `EXC-REVIEW-003`）作为已发生的批准证据保留，用于追溯当时的适用范围，不再作为今后同类事项的前置条件。
+- 每次 UI 代码修改后，除受影响行为测试外，还必须运行 `python scripts/check_ui_conventions.py --changed --strict`；
+  该门禁只检查本次新增/修改行。使用 `--all` 盘点历史遗留时，不得把历史发现伪装成本轮回归；历史代码若在本次触碰且暂时无法迁移，
+  必须留下带理由的例外并补相邻测试。
+- 任何代码审查都必须遵循 `docs/代码审查基准.md`。与 `docs/设计基准.md` 一致的明确产品取舍不得作为 Bug；缺少触发条件、预期与实际差异、代码证据或可复现证据的怀疑项只能列为待核实，不能直接进入修改。体验建议、架构建议和新增功能必须与缺陷分栏，不能用高严重度措辞迫使维护者修改。
+- 审查与复验的旧版对比、故障注入和变异验证必须在隔离副本中进行，不得覆盖主工作区源码或暂存状态再恢复。未提交审查对象须保存可恢复的第一方快照；内容指纹必须覆盖纳入的未跟踪文件，不能用 `git diff HEAD` 的哈希代替完整对象身份。具体证据、隔离与清理规则见 `docs/代码审查基准.md`。
+- 规划、实施与复验须承接有关的既有用户决定，并成对核对原问题消失及最可能的副作用。红绿对照须保持输入、初始状态和断言一致；更换探针或前置条件须披露并重新建立对照。未满足的本阶段必需门禁不能记为非阻断建议；报告核实、修复通过和发布准备分开声明。不得以文件未改、失败数量相同、重试成功或仅有新增符号导入失败，代替回归归因和有效修复证据。
+- 旧待裁定项进入实施前，须引用已批准决定，或给出权威依据证明原先的产品歧义已经消除，并明确更新原决定状态；B 对技术修复方向的认可不等于维护者批准。涉及启动入口、命令组装或共享状态分类的修改，验证真实入口及相邻状态组合，不能只测规避了原错误的辅助函数。跨轮未完成的补证、原因未明的失败和发布门禁统一承接到私有未闭环清单，保留原 ID、责任角色、关闭证据与适用门禁；准确口径见 `docs/代码审查基准.md`。
+- 修复复验应覆盖实际变更及直接影响边界，不只核对原问题 ID。通过后结束代码审查，由 B 回传原实施 A 完成已授权的交付收尾；A 仅保存同一源码树的开发检查点、核验恢复内容并更新统一清单，不重新实施或重开审查。收尾入口、终态与受阻处理见 `docs/代码审查基准.md` 的“复验后交付收尾”。后续增量审查从最近一次有效复验通过的修复后对象开始，无新增内容就不新建审查轮次。只有用户明确要求再次检查同一对象或出现新的具体证据时才定向重开，不自动把比较起点退回修复前。规划时集中列出已知的范围、验证前提和待决定事项；后续确有新情况再询问，不重复申请已经有效的授权。
+- 可以随时审查仓库内 Markdown 文档中的约束、路线、状态和设定，并主动向用户指出已经过时、彼此冲突或值得调整的内容。用户确认修改前，现有文档仍具有约束力，必须继续遵守；不得仅因认为其过时就静默绕过、删除或改写。
+- 对容易被误解的实现使用少量、定向的代码注释：`DESIGN` 解释反直觉的产品取舍，`INVARIANT` 标明重构不得破坏的状态关系，`SAFETY` 标明为避免重复副作用、数据损坏或秘密泄漏而保留的限制。注释应解释“为什么”，并尽量指向 `docs/设计基准.md` 或对应 ADR；不得给显而易见的赋值和流程逐行写旁白。设计发生变化时，必须同步更新代码注释、权威文档和相关测试，不能让旧注释继续冒充当前事实。
+- 用户指令只按其字面含义理解，不推测未表达的隐藏意图、态度或否定。例如用户在看到方案后询问“这行吗？”时，应解释该方案为何可行、如何实现及其边界，而不得擅自理解为方案有问题、用户要求换方案或已经授权修改。只有明确表达的评估、解释、修改、暂停、打包、提交或发布要求才触发相应动作。
+- 不猜测隐藏意图并不等于机械执行已知有害的决定。若按用户字面要求会造成能够明确说明的维护负担、数据损失、安全风险、测试失真、发布混乱或与用户既定目标直接冲突，必须先说明具体后果和可选调整，再请用户确认；只要关键含义或用户接受的代价仍不清楚，就继续质询，不得用含糊的默认选择替用户承担风险。
+- **及时私有备份**（维护者 2026-10-09 要求）：实施/返修前先保护现有工作；每个有内容变化的批次完成后、修改持续 30 分钟时、交给 B 前及暂停/结束前，必须按 `docs/开发备份与恢复规范.md` 保存并推送到私有 `origin`，核对远程完整提交与恢复证据。阶段完成且必需验证满足时建立真实范围的开发检查点；尚未验证、测试失败、待裁定或混有前轮改动时，保存到独立 `codex/backup/…` 分支并明确标注 WIP/恢复快照。保存源码不改变其批准、实施、验证或发布状态，也不允许上传敏感内容。
+- 不得以“未打包/未发布”“等待 B”“工作树很脏”“其他项仍失败”或“本地已经提交”为由长期不备份，也不重复申请已经有效的私有备份授权。同一内容已有核验通过的远程备份时引用原证据，无需重复提交。上传受阻须保留仓库外经核验的本机副本并如实记录；用户明确要求本轮不提交/不推送时遵守该限制并说明本机恢复入口。
+- 流程记录使用 `python scripts/check_review_workflow.py` 的相应子命令机械核对，具体范围见审查基准。实际模型、身份、授权与证据真实性仍由独立复核核实；不得以校验器退出 0 代替独立判断。替代接口缺少某参数时，仍须显式设置该接口实际支持的模型/推理/服务档参数，按参数逐项记录支持情况、配置值及观测值；未知实际值保留未知，不把配置值冒充观测值。
+- 规划中的回滚也必须指定准确快照/提交、保留范围和隔离核验办法。不得用 `git checkout -- <文件或目录>`、`git restore`、`git reset --hard` 或 `git clean` 把包含前轮未提交修改的主工作树当成干净基线；不能仅凭测试通过声称丢失代码已恢复。出现意外覆盖时先保留现场，按上述规范从真实内容恢复；缺少原内容的部分记录为缺口，不能静默按测试倒推实现。
+- 当用户要求的行为较为宽泛，可能产生明显不同的用户可见结果时，不得默默选择风险较高的理解。先完成含义明确的部分，保持不确定部分不变，并在实施前向用户询问缺失的决定。
+- 严禁提交 `config.ini`、凭据、用户导入的图片、日志、崩溃报告、构建产物或其他仅属于当前机器的状态文件。**例外一**：插件测试守护所需的**确定性**分发包（当前为受跟踪的 `plugins/*/*.fkrplugin`）可以提交——它们由清单同步测试守护且内容确定性可复现，不属构建产物。**例外二**：`pyright_plugin_baseline.json` 作为 `FR-015` 插件数据层棘轮所需的**确定性守护数据**可以提交——它必须不含绝对路径、用户名、时间戳、环境信息或其他机器状态，必须能由 `scripts/pyright_plugin_baseline.py` 确定性复算，且**基线只能减少、不得增加**（增长须由维护者显式批准并同步 `INITIAL_TOTAL`）。**两个例外均不扩展到任何其他生成文件**；`pyrightconfig.plugin_baseline.json` 是手写配置而非生成状态，本就不在禁令范围内。
+- 维持隐私边界：日志隐私保护默认开启。用户可在本机明确选择关闭保护，以便在调试时让运行日志显示普通工作流文本、变量值、窗口条件、路径和错误详情；但凭据值和“输入秘密文本”动作的内容在任何情况下都不得进入日志。无论该开关是否关闭，诊断信息和崩溃报告都必须继续受到隐私保护。普通导出只保存 JSON 而不复制模板资源；完整迁移包会保留普通工作流内容和模板图片，并在首次使用时明确警告；脱敏分享包必须移除隐私内容并停用受影响步骤。凭据名称属于可迁移的引用信息，可以随普通方案或完整迁移包导出；目标电脑必须重新填写对应秘密值。DPAPI 密文、明文秘密值和“输入秘密文本”原文绝不能包含在任何导出文件中。
+- 简易模式中，仅因视图层级而隐藏、且仍受当前动作支持的高级业务参数继续生效；调试断点在简易模式下暂不触发，切回高级模式后恢复。
+- 步骤的动作专属参数必须保留用户原始草稿。当前动作或当前目标类型无关的参数在简易模式和高级模式中都隐藏，并由有效参数副本从校验和执行中屏蔽；高级模式只额外显示当前动作确实支持的高级参数。切换动作或目标类型不得清空这些字段。点击步骤目标为空时保留“图片目标”和“坐标目标”两个折叠入口及填写提示，但不展开无效参数。不得把“视图隐藏但适用”和“动作无关而不生效”混为一谈。
+- 独立 Runner 目前是默认关闭的实验后端。新增 C++/Rust 或其他执行器时必须接入统一 Runner 会话和版本化 IPC，实现 PID/能力握手、脱敏运行摘要、心跳和用户急停超时后的输入清理；不得让主窗口依赖具体后端，也不得在启动失败时静默改走另一条执行路径。
+- 除非另有文档明确说明某个变体采用不同约定，否则可选的原生加速必须经过能力检查，并保留可正常工作的 Python/OpenCV 回退路径。
+- 可以明确提出精简版、旧系统版或实验版等产品变体。应隔离其依赖和打包差异，不得悄悄改变当前主线版本的行为。
+- 由项目维护的 Markdown 文档正文和标题统一使用中文，便于作者直接审阅。文件名、代码标识符、命令、配置键和必须保持稳定的外部术语可以保留英文；缓存、第三方文件和自动生成文档不做人工翻译。
 
-- The current onedir and onefile packages share the same `fukua_rpa` business source and differ only in PyInstaller packaging.
-- `python scripts/build_release.py` builds the current default onedir package.
-- `python scripts/build_release.py --format onefile` builds the onefile package.
-- `python scripts/build_release.py --format all` builds both formats.
-- Both existing formats must use `scripts/runtime_pruning.py` and retain the verified Qt platform, JPEG, software OpenGL, native-core, and UI Automation runtime payloads they require.
-- A new package variant should document its feature boundary, dependency boundary, target systems, and test matrix rather than copying the main application into an untracked second codebase.
+## 公开仓库边界
 
-## Compatibility and safety
+- 当前默认远程 `origin` 是私有开发与备份仓库；远程 `public` 才是面向用户的公开仓库。日常提交和推送只能进入 `origin`。只有用户明确说明“正式发布”并要求公开全部源码时，才允许向 `public` 推送代码、标签或其他材料。不得因为本地测试包完成、版本号变化或普通备份请求而更新公开仓库。本机可将 `public` 推送地址保持为禁用状态；正式发布时才临时恢复，完成并核验后再次禁用。
+- “未经明确要求不得推送”的限制只针对公开远程 `public`。私有 `origin` 的开发检查点及独立 WIP 恢复分支按及时备份规则执行；无需等待用户逐次授权，也不得把公开发布限制误套到私有备份。用户明确限定本轮不提交/不推送时例外。
+- 私有仓库不改变敏感数据边界。配置、凭据、日志、崩溃报告、用户图片、反馈草稿和本机状态仍不得提交；私有开发历史中也应保持将来可安全筛选公开的文件结构。
+- 用户已经持续授权向私有 `origin` 保存阶段性开发检查点；2026-10-09 的及时备份要求同时覆盖经文件隐私审查、明确标注未验证状态的独立 WIP 源码恢复分支。WIP 不并入稳定/公开分支，不以备份代替实施授权、独立复验或正式验证。该授权不扩展到 `public`，也不允许创建公开拉取请求、GitHub Release、公开标签、上传发布附件或以其他方式更新公开仓库；这些操作仍须用户明确要求。
+- 每次准备提交到 GitHub 前，以及每次推送前，都必须检查 `git status`、实际暂存的文件列表和暂存区差异。逐个判断文件是否应公开：只有公开版本在构建、运行、验证、文档说明或协作开发中确实需要该文件时，才可以发布。
+- 反馈草稿、个人笔记、本地开发日记、日志、诊断信息、截图、生成的软件包、机器配置、凭据、导入资源和未发布的私有规划，默认都属于非公开内容。如果无法确定某个文件的价值或隐私属性，应保持其未暂存状态并询问用户。
+- 应按明确路径暂存需要公开的修改。公开提交不得使用 `git add .`、`git add -A` 等宽泛的暂存命令。
+- 公开的 `main` 分支必须与用户最新明确批准的稳定版本保持一致。未发布的工作应在私有 `origin` 的开发分支中保存，也可按需要保留本地检查点。只有用户明确要求公开预览版本时，才可以建立公开预览分支。
+- 正式发布顺序为：确认发布授权与范围，审阅拟公开文件并固定干净的精确候选提交，在本机创建与 `APP_VERSION` 匹配的候选版本标签，再执行完整正式验证。候选标签仅用于满足构建来源门禁，不表示已经发布，也不提前推送到 `public`；只有全部正式门禁通过后，才把同一已验证提交更新到公开 `main`、公开同一标签并上传发布附件。验证失败时公开仓库保持不变；源码有改动则重新固定候选并验证，不覆盖已公开标签。不得仅因为生成了本地测试包就移动 `main`。
 
-- Profile migrations must preserve the original file or backup before conversion. Unsupported profiles must not be partially loaded and then overwritten.
-- Background actions must not silently fall back to moving or clicking the real mouse when their result is unknown.
-- External threads, hooks, and native jobs must have bounded work and repeatable shutdown behavior.
-- Startup must remain offline. User-triggered links may open the system browser, but the application must not add hidden telemetry or automatic network checks.
+## 验证
+
+- 开发期间，应针对修改的行为及其相邻约定运行定向测试。
+- UI 变更还必须把 `tests/test_ui_conventions.py` 视为 E1/短静态测试；涉及主题、布局、窗口倍率、控件生命周期或高频交互时，
+  按 `tests/TEST_MATRIX.md` 扩大到相应 UI/DPI/性能回归。
+- 使用 `tests/TEST_MATRIX.md` 和 `scripts/run_impacted_tests.py`，根据变更路径保守地选择测试组。遇到未知影响或跨模块修改时，必须扩大而不是缩小测试范围。
+- 修改共享配置、步骤字典、能力表、通用设置窗口、步骤列表、Runner 生命周期或其他被多项功能复用的模块时，除直接功能测试外还必须运行相邻行为回归。应维护少量稳定的端到端代表场景；出现来源不明的回归时，优先利用边界清晰的 Git 检查点和 `git bisect` 定位，不以猜测替代归因。真实输入、多显示器、系统缩放、冻结包和长时间运行等无法由离屏测试证明的项目，继续保留到正式发布前的实机门禁。
+- 用户要求为本地测试构建或打包，不等于要求正式发布。此时应运行受影响测试、源码编译/静态检查，以及冻结包必须执行的启动、自检和运行时闭包检查；除非相关领域受到影响，否则不要运行完整单元测试、性能门禁或耐久测试。
+- 只有当用户明确说明这是正式版/稳定版构建，或明确要求发布/上传版本时，才运行完整发布验证，包括全部主程序单元测试、全部随仓库提供的插件测试（严格模式，任何失败均阻断）、Ruff、原生核心重建、性能门禁、耐久测试、冻结包启动检查、运行时闭包审计和压缩包验证。
+- 修改配置默认值、持久化、迁移、执行参数、工作流行为、打包逻辑或安全边界时，必须新增或更新测试。
+
+## 打包
+
+- 除非用户在当前请求中明确要求构建或打包，否则不得构建或打包可执行文件。
+- 当前 `onedir` 与 `onefile` 包共用同一套 `fukua_rpa` 业务源码，只在 PyInstaller 打包方式上存在差异。
+- `python scripts/build_release.py` 构建当前默认的 `onedir` 测试包，并执行受影响的源码检查和打包后烟雾测试。
+- `python scripts/build_release.py --format onefile` 构建 `onefile` 测试包。
+- `python scripts/build_release.py --format all` 同时构建两种测试包。
+- 只有用户明确要求正式版/稳定版发布后，才能添加 `--formal-release`；该参数会启用完整发布验证。
+- 现有两种打包格式都必须使用 `scripts/runtime_pruning.py`，并保留经过验证且实际需要的 Qt 平台插件、JPEG、软件 OpenGL、原生核心和 UI Automation 运行时载荷。
+- 新增打包变体时，应记录其功能边界、依赖边界、目标系统和测试矩阵，不得把主程序复制为另一套未受跟踪的代码库。
+
+## 兼容性与安全
+
+- 当前主线只支持 Windows 10 1809 及以上版本（x64）和 Windows 11（x64）。除非用户以后明确改变产品范围，不得为 macOS、Linux、Windows 10 1809 以前版本、32 位系统或其他操作系统新增适配代码、兼容分支、依赖、构建产物或 CI 任务；也不得为了跨平台而削弱现有 Win32、UI Automation、DXGI 和原生输入能力。
+- 软件更新不承诺兼容任何旧版本方案，也不需要等到大版本才允许提高最低方案格式。现有迁移代码可以在成本合理时继续提供尽力读取，但不得为了兼容旧方案阻止结构改进或形成长期维护义务。
+- 取消兼容承诺不取消数据安全边界：格式不受支持时必须明确拒绝或只读打开，不能部分加载、自动保存或覆盖原配置；若本次更新仍提供转换，转换前必须验证原始数据并保留原文件或备份。
+- 当后台动作的结果无法确定时，不得悄悄回退为移动或点击真实鼠标。
+- 外部线程、钩子和原生任务必须具有有界工作量，并能够以可重复的方式关闭。
+- “本程序不联网”专指 fukuaRPA 不与本机之外的互联网、局域网设备或远程服务通信，不发起对外网络请求，不发送遥测，不自动检查更新或后台下载。主进程、独立 Runner 和本机辅助进程之间通过 Windows 命名管道、共享内存、回环地址或其他不离开当前电脑的机制传输数据属于本机进程间通信，不视为对外联网，也不应为了“不联网”承诺而回避；这类通信仍须保持仅限本机、身份校验、数据有界和可取消。用户主动点击作者主页或项目链接时，只允许把公开网址交给系统默认浏览器；网页访问由浏览器完成，不属于 fukuaRPA 对外通信。
+
+## 本地开发环境
+
+- 缺少必要开发工具时，可以直接安装所需的测试包、编译器、SDK、CLI 或构建环境。优先使用项目现有环境或隔离的/仅限当前用户的环境；安装前先检查已有版本，避免无必要地替换正常工作的工具链。
+- 只有安装过程需要用户登录账号、购买许可证、重启电脑、关闭安全控制，或进行其他会明显影响全系统的更改时，才需要询问用户。除非应用程序运行时确实需要，否则 `pytest` 等仅供开发使用的工具不得打入发布产物。

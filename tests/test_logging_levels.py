@@ -5,7 +5,6 @@ from unittest import mock
 from fukua_rpa.engine import RPAEngine
 from fukua_rpa.logging_service import GLOBAL_CONFIG, flush_logs
 
-
 TIMESTAMP_PATTERN = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] ")
 
 
@@ -64,9 +63,31 @@ class LoggingLevelTests(unittest.TestCase):
         ):
             self.assertIn(section, joined)
         self.assertIn("all_timing_changes_ms", joined)
-        self.assertIn("this step-parameter payload omits raw task values and full paths", joined)
+        self.assertIn("raw task values, private text, window titles", joined)
         self.assertNotIn("sensitive-user-text", joined)
         self.assertTrue(all(TIMESTAMP_PATTERN.match(message) for message in messages))
+
+    def test_complete_run_can_emit_ordinary_debug_values_after_explicit_opt_out(self):
+        engine = self.create_engine()
+        engine.log_level = 2
+        engine.load_and_precompute = lambda _tasks: True
+        engine.execute_task_once = mock.Mock(return_value="success")
+        messages = []
+        GLOBAL_CONFIG["privacy_protected"] = False
+
+        engine.run_tasks(
+            [{"type": 4.0, "value": "ordinary-debug-sentinel"}],
+            callback_msg=messages.append,
+        )
+        self.assertTrue(flush_logs())
+        joined = "\n".join(messages)
+
+        self.assertIn("ordinary-debug-sentinel", joined)
+        self.assertIn("log privacy protection disabled", joined)
+        self.assertIn("credential secret values remain prohibited", joined)
+        self.assertIn('"log_privacy_protection": false', joined)
+        self.assertIn('"credential_values_logged": false', joined)
+        self.assertIn('"secret_text_action_contents_logged": false', joined)
 
 
 if __name__ == "__main__":

@@ -11,10 +11,11 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
-
 MAX_ARCHIVE_FILES = 10000
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 COPY_CHUNK_BYTES = 1024 * 1024
+# Fixed timestamp for all ZIP entries so identical inputs produce byte-for-byte
+# identical archives (reproducible builds), independent of build machine time.
 FIXED_ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
 REPARSE_POINT_ATTRIBUTE = 0x400
 
@@ -28,6 +29,13 @@ def hash_stream(handle) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
 def _safe_member(name: str, build_name: str) -> str:
     if "\\" in name or "\0" in name:
         raise ValueError(f"ZIP 使用了非标准路径分隔符：{name}")
@@ -39,6 +47,11 @@ def _safe_member(name: str, build_name: str) -> str:
     relative = PurePosixPath(*path.parts[1:])
     if not relative.parts:
         raise ValueError(f"ZIP 文件路径缺少相对名称：{name}")
+    # Reject Windows reserved device names (CON, PRN, NUL, COM1-9, LPT1-9)
+    for part in relative.parts:
+        stem = part.split(".")[0].upper()
+        if stem in _WINDOWS_RESERVED:
+            raise ValueError(f"Windows reserved device name in archive: {name}")
     relative_name = relative.as_posix()
     if name != f"{build_name}/{relative_name}":
         raise ValueError(f"ZIP 使用了非规范路径：{name}")
@@ -204,6 +217,14 @@ def verify_archive(archive_path: Path, manifest_path: Path) -> dict:
         if len(members) > MAX_ARCHIVE_FILES:
             raise ValueError("ZIP 文件数量超过上限")
         for member in members:
+            # FR-20260811-D15-7(建议): 断言条目时间戳固定，守护可复现构建约定。
+            # build_release 的 archive --check 走本函数，verify_dist 因调用时序
+            # 早于 archive 创建而不可达，故把断言放在这里（生成后立即校验）。
+            if member.date_time != FIXED_ZIP_TIMESTAMP:
+                raise ValueError(
+                    f"ZIP 条目时间戳不固定（可复现构建约定被破坏）：{member.filename} "
+                    f"got {member.date_time} expected {FIXED_ZIP_TIMESTAMP}"
+                )
             relative = _safe_member(member.filename, build_name)
             key = relative.casefold()
             if key in seen:
@@ -231,6 +252,8 @@ def verify_archive(archive_path: Path, manifest_path: Path) -> dict:
         missing = sorted(set(expected) - seen)
         if missing:
             raise ValueError(f"ZIP 缺少发布文件：{missing[:5]}")
+        # SHA-256 验证内容对照清单，testzip 额外验证 ZIP 容器/CRC 完整性，
+        # 二者互补而非冗余。
         bad_member = archive.testzip()
         if bad_member:
             raise ValueError(f"ZIP CRC 校验失败：{bad_member}")

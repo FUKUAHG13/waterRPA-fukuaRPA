@@ -12,6 +12,7 @@ __pycache__/
 .coverage
 .coverage.*
 coverage.xml
+coverage_*.txt
 htmlcov/
 
 # Local Python environments
@@ -32,7 +33,11 @@ __pypackages__/
 
 # Build and release output (re-created by the release scripts)
 /build/
+/build_v*/
 /dist/
+/dist_v*/
+/opencv_src/
+/opencv_build/
 /native_core/build/
 /fukua_rpa_core.dll
 *.obj
@@ -42,14 +47,25 @@ __pypackages__/
 
 # Local planning, experiments, and maintainer working notes
 /.scratch/
+# FR-20261006-010 / DEC-20260930-002-07：AI 工作区的记忆文件属本机状态，
+# 两个路径都要覆盖——`/.workbuddy/memory/` 是已跟踪的旧路径（忽略规则对
+# 已跟踪文件不生效，须另行 `git rm --cached`），`/.workbuddy-ai/` 是当前
+# 在用的新路径，此前完全未覆盖，处于「随时可被误提交」状态。
+/.workbuddy/memory/
+/.workbuddy-ai/
 /CHANGELOG.md
-/docs/adr/
 /docs/agents/
 /docs/GIT_GUIDE_ZH.md
 /docs/PERFORMANCE_MULTISCALE_PLAN.md
 /docs/RECOGNITION_WAKE_PLAN.md
 /docs/RUNTIME_SIZE_AUDIT.md
 /docs/UI_MODERNIZATION.md
+/docs/fukuaRPA宣传视频文案.md
+/docs/计划任务与插件系统实施方案.md
+# ADV-20261008-901：`/docs/adr/`、`/docs/设计基准.md`、`/docs/代码审查基准.md`、
+# `/docs/步骤设置显隐矩阵.md`、`/docs/项目健康度评估基准.md` 自提交 26b7f56 起已重新
+# 纳入版本控制，忽略规则对已跟踪文件不生效，因此对应的忽略条目已删除，避免继续造成
+# 「内部文档不入仓」的误导。
 
 # fukuaRPA data that belongs to the current computer or user
 /.fukuaRPA_session.json
@@ -57,6 +73,25 @@ __pypackages__/
 /profiles_backup.json
 /credentials.dat
 /rpa_debug_log.txt
+# FR-20261005-701: logging_service._rotate_log renames the log to `<path>.1`
+# when it reaches its size cap, and the structured form is `rpa_debug_log.jsonl`
+# (also rotated). All of these are machine-local logs and must never be committed.
+/rpa_debug_log.txt.*
+/rpa_debug_log.jsonl
+/rpa_debug_log.jsonl.*
+# Windows 保留设备名残留：Git Bash 下 `> nul` 重定向会生成实体文件，
+# 使 run_impacted_tests 把未知文件计为全量回退（PKG-FR-002）。
+/nul
+# 插件禁用的本机持久状态：源码检出时插件安装目录即受跟踪的 plugins/，
+# 该状态由 PluginRegistry 自动写入，属单机状态，不得入库。
+/plugins/.disabled_plugins.json
+# 测试探针隔离目录：test_release_tooling 的源码指纹探针只写入
+# plugins/.probe-<uuid4>/ 并在 finally 中清理；进程被中断时仍可能残留，
+# 故显式忽略，避免残留被误提交（ADV-20260920-001）。
+/plugins/.probe-*/
+/scheduled_tasks.json
+/scheduled_task_history.json
+/scheduled_task_logs.jsonl
 /portable.flag
 /crash_reports/
 /profiles_history/
@@ -65,6 +100,42 @@ __pypackages__/
 /*_diagnostics_*.json
 /*.zip
 *.log
+
+# Personal drafts that must never become public project material
+/.git_allowed_signers
+/反馈意见*.txt
+/更新日志*.txt
+/*评价*.md
+/*评估*.md
+/*审查*.md
+/*复核*.md
+/*核查*.md
+/*REVIEW*.md
+/*临时*.txt
+/test_output.txt
+/_test_result.txt
+/_verify_*.py
+/_pyright_report.py
+/核查结果*.md
+/改进推进规划*.md
+/docs/*审查意见*.md
+/docs/*评估*.md
+/docs/*审查报告*.md
+/docs/*核实验证*.md
+/docs/*增强方案*.md
+/docs/*复验记录*.md
+/docs/health/*评估*.md
+/docs/health/*核实*.md
+/docs/health/*核对*.md
+/docs/health/项目健康度-*.md
+
+# 权威开发基准必须进入版本控制；单次审查报告、本地计划和维护日志继续忽略。
+!/docs/adr/
+!/docs/adr/*.md
+!/docs/设计基准.md
+!/docs/代码审查基准.md
+!/docs/项目健康度评估基准.md
+!/docs/步骤设置显隐矩阵.md
 
 # Editor and operating-system files
 .idea/

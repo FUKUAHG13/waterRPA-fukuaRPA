@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +15,7 @@ from fukua_rpa.constants import (  # noqa: E402
     BUILD_NAME,
     SUPPORTED_WINDOWS_TEXT,
 )
+from scripts.hashutil import atomic_write_text  # noqa: E402
 
 
 def release_readme_text() -> str:
@@ -36,8 +35,10 @@ def release_readme_text() -> str:
 
 离线与更新
 ----------
-程序启动时不联网，也不会自动检查更新。设置页中的作者主页和 GitHub 按钮只在用户主动点击时
-交给系统浏览器打开。
+fukuaRPA 本身始终不联网：在整个运行期间不访问互联网或局域网，不发送遥测，不自动检查更新，
+也不进行后台下载。实验性独立 Runner 只在本机进程之间通信，不向外部网络发送数据。设置页中的
+作者主页和 GitHub 按钮只在用户主动点击时把公开网址交给系统默认浏览器；网页访问由浏览器完成，
+不是 fukuaRPA 在联网。
 
 完整性与签名
 ------------
@@ -59,21 +60,6 @@ def release_readme_text() -> str:
 """
 
 
-def atomic_write(path: Path, text: str) -> None:
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("release_dir", type=Path)
@@ -82,7 +68,7 @@ def main() -> None:
     if not release_dir.is_dir():
         raise SystemExit(f"Release directory not found: {release_dir}")
     output = release_dir / "README_RELEASE.txt"
-    atomic_write(output, release_readme_text())
+    atomic_write_text(output, release_readme_text())
     print(output)
 
 

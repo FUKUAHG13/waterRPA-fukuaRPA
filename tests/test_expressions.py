@@ -10,7 +10,6 @@ from fukua_rpa.expressions import (
 )
 from fukua_rpa.validation import validate_task_list
 
-
 BASE_CONFIG = {
     "conf": "0.8",
     "scale_min": "1",
@@ -51,9 +50,8 @@ class SafeExpressionTests(unittest.TestCase):
             "[x for x in value]",
             "{'x': 1}",
         ):
-            with self.subTest(expression=expression):
-                with self.assertRaises(ExpressionError):
-                    compile_expression(expression)
+            with self.subTest(expression=expression), self.assertRaises(ExpressionError):
+                compile_expression(expression)
 
     def test_unbounded_results_are_rejected(self):
         with self.assertRaises(ExpressionError):

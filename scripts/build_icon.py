@@ -10,7 +10,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SVG_PATH = ROOT / "assets" / "fukuaRPA.svg"
 PNG_PATH = ROOT / "assets" / "fukuaRPA.png"

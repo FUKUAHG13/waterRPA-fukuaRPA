@@ -1,0 +1,15 @@
+{
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "strict",
+  "include": [
+    "fukua_rpa/plugin_actions.py",
+    "fukua_rpa/plugin_host_client.py",
+    "fukua_rpa/plugin_host_process.py",
+    "fukua_rpa/plugin_manifest.py",
+    "fukua_rpa/plugin_package.py",
+    "fukua_rpa/plugin_protocol.py",
+    "fukua_rpa/plugin_registry.py"
+  ],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}

@@ -1,0 +1,10 @@
+# Development-only dependencies (not included in release builds)
+-r requirements.txt
+pytest>=8.0
+pytest-cov>=5.0
+ruff>=0.11
+hypothesis>=6.0
+# FR-20260928-001: FR-015 插件数据层棘轮守护需要 pyright；钉定版本避免诊断文本随版本漂移
+pyright==1.1.411
+# 审查记录 YAML 的安全解析，仅用于开发校验，不进入程序包
+PyYAML==6.0.3

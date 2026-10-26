@@ -1,8 +1,10 @@
+import hashlib
 import json
 import os
 import random
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -10,15 +12,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings
 
+from fukua_rpa.commands import COMMAND_SPECS, command_code, command_name, command_names
 from fukua_rpa.config_schema import (
     UnsupportedProfileVersion,
     default_profile_config,
     migrate_profile_config,
 )
-from fukua_rpa.commands import COMMAND_SPECS, command_code, command_name, command_names
 from fukua_rpa.config_store import (
     archive_existing_backup,
     atomic_write_json,
+    list_profile_backups,
     list_profile_history,
     load_profiles_backup,
     load_profiles_state,
@@ -26,10 +29,16 @@ from fukua_rpa.config_store import (
     profiles_backup_payload,
     profiles_signature,
     validate_profile_config_data,
+    validate_profiles_payload,
 )
-from fukua_rpa.constants import PROFILE_BACKUP_FORMAT, PROFILE_SCHEMA_VERSION
+from fukua_rpa.constants import (
+    BUILD_NAME,
+    MAX_PROFILE_NAME_LENGTH,
+    PROFILE_BACKUP_FORMAT,
+    PROFILE_SCHEMA_VERSION,
+)
 from fukua_rpa.engine import RPAEngine
-from fukua_rpa.engine_actions import registered_action_codes
+from fukua_rpa.engine.actions_exec import registered_action_codes
 from fukua_rpa.profile_model import ProfileCollection
 from fukua_rpa.run_config import EngineRunConfig, RunConfigError, RunRequest
 from fukua_rpa.runtime_state import RunLifecycle, RunState
@@ -40,12 +49,31 @@ from fukua_rpa.workflow_analysis import analyze_workflow_structure, build_workfl
 
 
 class ConfigurationFoundationTests(unittest.TestCase):
+    def test_profile_signature_remains_compatible_with_pre_commit_format(self):
+        profiles = {"B": {"value": 2}, "A": {"value": 1}}
+        legacy_canonical = json.dumps(
+            profiles, ensure_ascii=False, sort_keys=True
+        )
+        expected = hashlib.sha256(
+            f"A\n{legacy_canonical}".encode()
+        ).hexdigest()
+
+        _stored, signature = profiles_signature(profiles, "A")
+
+        self.assertEqual(signature, expected)
+
     def test_command_registry_round_trips_every_persisted_command(self):
         self.assertEqual(len(command_names()), len(set(command_names())))
-        self.assertEqual([spec.code for spec in COMMAND_SPECS], [float(i) for i in range(1, 26)])
+        # 29.0 = 录制输入时序（批次 2）；新指令必须同时具备注册表项与 handler，
+        # 因此这里改为「连续覆盖 1..29」而不是只放到 28。
+        self.assertEqual(
+            [spec.code for spec in COMMAND_SPECS],
+            [float(i) for i in range(1, 30)],
+        )
         for spec in COMMAND_SPECS:
             self.assertEqual(command_name(spec.code), spec.name)
             self.assertEqual(command_code(spec.name), spec.code)
+        self.assertIsNone(command_code("未来版本动作"))
         self.assertEqual(registered_action_codes(), {spec.code for spec in COMMAND_SPECS})
 
     def test_migration_preserves_unknown_fields_and_detaches_nested_values(self):
@@ -62,6 +90,17 @@ class ConfigurationFoundationTests(unittest.TestCase):
         self.assertEqual(result.value["future_profile_field"], [1, 2])
         result.value["tasks"][0]["future_field"]["x"] = 9
         self.assertEqual(source["tasks"][0]["future_field"]["x"], 1)
+
+    def test_migration_removes_obsolete_low_power_ui_setting(self):
+        source = default_profile_config()
+        source["low_power_ui"] = True
+        source["cpu_refresh_interval"] = "auto"
+
+        result = migrate_profile_config(source)
+
+        self.assertTrue(result.changed)
+        self.assertNotIn("low_power_ui", result.value)
+        self.assertEqual(result.value["cpu_refresh_interval"], 2000)
 
     def test_future_profile_version_is_rejected_without_downgrade(self):
         profile = default_profile_config()
@@ -186,6 +225,26 @@ class ConfigurationFoundationTests(unittest.TestCase):
         self.assertEqual(model.profiles["A2"]["tasks"][0]["value"], "3,4")
         self.assertEqual(model.move_current(1), 1)
         self.assertEqual(list(model.profiles), ["B", "A2"])
+        model.reorder(["A2", "B"])
+        self.assertEqual(list(model.profiles), ["A2", "B"])
+        with self.assertRaisesRegex(ValueError, "不一致"):
+            model.reorder(["A2"])
+
+    def test_profile_names_are_trimmed_and_bounded_before_model_mutation(self):
+        model = ProfileCollection()
+        model.replace({"A": default_profile_config()}, "A")
+        model.create("  新方案  ")
+        self.assertIn("新方案", model.profiles)
+        self.assertNotIn("  新方案  ", model.profiles)
+
+        before = model.snapshot()
+        with self.assertRaisesRegex(ValueError, "最多允许"):
+            model.rename("x" * (MAX_PROFILE_NAME_LENGTH + 1))
+        self.assertEqual(model.snapshot(), before)
+
+    def test_profile_store_rejects_noncanonical_whitespace_name(self):
+        error = validate_profiles_payload({" 方案 ": default_profile_config()})
+        self.assertIn("两端不能包含空格", error)
 
     def test_profile_validator_rejects_field_explosion(self):
         profile = default_profile_config()
@@ -193,6 +252,18 @@ class ConfigurationFoundationTests(unittest.TestCase):
             {"type": 1.0, "value": "1,1", **{f"extra_{index}": index for index in range(300)}}
         ]
         self.assertIn("字段过多", validate_profile_config_data(profile))
+
+    def test_profile_validator_rejects_deep_unknown_data_without_recursion(self):
+        nested = {"leaf": True}
+        for _index in range(80):
+            nested = {"next": nested}
+        profile = default_profile_config()
+        profile["unknown_future_data"] = nested
+
+        error = validate_profile_config_data(profile)
+
+        self.assertIsNotNone(error)
+        self.assertIn("嵌套层级超过上限", error)
 
     def test_config_recovery_falls_back_to_history(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -206,6 +277,7 @@ class ConfigurationFoundationTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(archived))
 
             settings.setValue("profiles_json", "{broken")
+            settings.setValue("profiles_commit_json", "{broken")
             settings.sync()
             with open(backup_path, "w", encoding="utf-8") as handle:
                 handle.write("{broken")
@@ -226,11 +298,94 @@ class ConfigurationFoundationTests(unittest.TestCase):
 
             new_profiles = {"A": default_profile_config()}
             new_profiles["A"]["tasks"] = [{"type": 1.0, "value": "2,2"}]
-            atomic_write_json(backup_path, profiles_backup_payload(new_profiles, "A"))
+            atomic_write_json(
+                backup_path,
+                profiles_backup_payload(new_profiles, "A", generation=2),
+            )
 
             loaded = load_profiles_state(settings, config_path, backup_path)
             self.assertEqual(loaded.source, "pending_backup")
             self.assertEqual(loaded.profiles["A"]["tasks"][0]["value"], "2,2")
+
+    def test_missing_main_record_recovers_from_atomic_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            backup_path = os.path.join(temp_dir, "profiles_backup.json")
+            settings = QSettings(config_path, QSettings.IniFormat)
+            profiles = {"A": default_profile_config()}
+            profiles["A"]["tasks"] = [{"type": 1.0, "value": "7,8"}]
+            persist_profiles(settings, backup_path, profiles, "A")
+            for key in (
+                "profiles_commit_json",
+                "profiles_json",
+                "profiles_signature",
+                "profiles_generation",
+            ):
+                settings.remove(key)
+            settings.sync()
+
+            loaded = load_profiles_state(settings, config_path, backup_path)
+
+            self.assertEqual(loaded.source, "backup")
+            self.assertEqual(loaded.profiles["A"]["tasks"][0]["value"], "7,8")
+
+    def test_stale_backup_does_not_replace_newer_committed_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            backup_path = os.path.join(temp_dir, "profiles_backup.json")
+            settings = QSettings(config_path, QSettings.IniFormat)
+            old_profiles = {"A": default_profile_config()}
+            old_profiles["A"]["tasks"] = [{"type": 1.0, "value": "1,1"}]
+            persist_profiles(settings, backup_path, old_profiles, "A")
+            with open(backup_path, "rb") as handle:
+                stale_backup = handle.read()
+
+            new_profiles = {"A": default_profile_config()}
+            new_profiles["A"]["tasks"] = [{"type": 1.0, "value": "9,9"}]
+            persist_profiles(settings, backup_path, new_profiles, "A")
+            with open(backup_path, "wb") as handle:
+                handle.write(stale_backup)
+
+            loaded = load_profiles_state(settings, config_path, backup_path)
+
+            self.assertEqual(loaded.source, "settings")
+            self.assertEqual(loaded.profiles["A"]["tasks"][0]["value"], "9,9")
+
+    def test_profile_order_survives_persist_and_reload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            backup_path = os.path.join(temp_dir, "profiles_backup.json")
+            settings = QSettings(config_path, QSettings.IniFormat)
+            profiles = {
+                "Z-last": default_profile_config(),
+                "A-first": default_profile_config(),
+            }
+
+            persist_profiles(settings, backup_path, profiles, "Z-last")
+            stored = json.loads(settings.value("profiles_json"))
+            loaded = load_profiles_state(settings, config_path, backup_path)
+
+            self.assertEqual(list(stored), ["Z-last", "A-first"])
+            self.assertEqual(list(loaded.profiles), ["Z-last", "A-first"])
+
+    def test_tampered_main_generation_falls_back_to_valid_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            backup_path = os.path.join(temp_dir, "profiles_backup.json")
+            settings = QSettings(config_path, QSettings.IniFormat)
+            profiles = {"A": default_profile_config()}
+            persist_profiles(settings, backup_path, profiles, "A")
+            commit = json.loads(settings.value("profiles_commit_json"))
+            commit["generation"] += 1
+            settings.setValue(
+                "profiles_commit_json", json.dumps(commit, ensure_ascii=False)
+            )
+            settings.sync()
+
+            loaded = load_profiles_state(settings, config_path, backup_path)
+
+            self.assertEqual(loaded.source, "backup")
+            self.assertIn("提交签名不匹配", loaded.recovery_message)
 
     def test_signed_backup_detects_valid_json_tampering(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -267,6 +422,64 @@ class ConfigurationFoundationTests(unittest.TestCase):
                 )
                 archive_existing_backup(backup_path, limit=3, min_interval=0)
             self.assertLessEqual(len(list_profile_history(backup_path)), 3)
+
+    def test_user_backup_count_includes_latest_and_can_disable_every_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            backup_path = os.path.join(temp_dir, "profiles_backup.json")
+            settings = QSettings(config_path, QSettings.IniFormat)
+            profiles = {"A": default_profile_config()}
+
+            for marker in range(5):
+                profiles["A"]["conf"] = f"0.{marker + 1}"
+                persist_profiles(
+                    settings,
+                    backup_path,
+                    profiles,
+                    "A",
+                    backup_count=3,
+                )
+                for path in list_profile_history(backup_path):
+                    os.utime(path, (1, 1))
+
+            self.assertEqual(len(list_profile_backups(backup_path)), 3)
+            self.assertEqual(len(list_profile_history(backup_path)), 2)
+
+            persist_profiles(
+                settings, backup_path, profiles, "A", backup_count=1
+            )
+            self.assertEqual(list_profile_backups(backup_path), [backup_path])
+
+            persist_profiles(
+                settings, backup_path, profiles, "A", backup_count=0
+            )
+            self.assertEqual(list_profile_backups(backup_path), [])
+            loaded = load_profiles_state(
+                settings,
+                config_path,
+                backup_path,
+                backup_count=0,
+            )
+            self.assertEqual(loaded.source, "settings")
+            self.assertEqual(loaded.profiles["A"]["conf"], "0.5")
+
+    def test_disabled_backups_are_not_used_as_an_implicit_recovery_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            backup_path = os.path.join(temp_dir, "profiles_backup.json")
+            settings = QSettings(config_path, QSettings.IniFormat)
+            profiles = {"A": default_profile_config()}
+            atomic_write_json(backup_path, profiles_backup_payload(profiles, "A"))
+
+            loaded = load_profiles_state(
+                settings,
+                config_path,
+                backup_path,
+                backup_count=0,
+            )
+
+            self.assertEqual(loaded.source, "empty")
+            self.assertEqual(loaded.profiles, {})
 
 
 class RuntimeFoundationTests(unittest.TestCase):
@@ -315,6 +528,19 @@ class RuntimeFoundationTests(unittest.TestCase):
     def test_invalid_runtime_numbers_are_rejected(self):
         config = default_profile_config()
         config["detect_delay"] = "nan"
+        with self.assertRaises(RunConfigError):
+            EngineRunConfig.from_mapping(config)
+
+    def test_runtime_waits_and_deadlines_have_finite_upper_bounds(self):
+        for field in ("settle", "timeout"):
+            config = default_profile_config()
+            config[field] = "86401"
+            with self.subTest(field=field), self.assertRaises(RunConfigError):
+                EngineRunConfig.from_mapping(config)
+
+        config = default_profile_config()
+        config["loop_mode"] = "指定时间(秒)"
+        config["loop_val"] = str(365 * 24 * 60 * 60 + 1)
         with self.assertRaises(RunConfigError):
             EngineRunConfig.from_mapping(config)
 
@@ -392,6 +618,37 @@ class RuntimeFoundationTests(unittest.TestCase):
         with self.assertRaises(RunConfigError):
             EngineRunConfig.from_mapping(config)
 
+    def test_fuzz_from_mapping_random_seed(self):
+        """Random-seed variant (set FUZZ_SEED=random to enable)."""
+        if os.environ.get("FUZZ_SEED", "") != "random":
+            self.skipTest("set FUZZ_SEED=random to enable")
+        seed = random.randint(0, 2**32 - 1)
+        random.seed(seed)
+        values = [None, "", "nan", "inf", -1, 0, [], {}, object(), "999999999999999999999"]
+        fields = [
+            "conf",
+            "scale_min",
+            "scale_max",
+            "scale_step",
+            "move_spd",
+            "click_hld",
+            "detect_delay",
+            "playback_speed",
+            "start_step",
+            "loop_start_round",
+            "loop_end_round",
+            "log_level",
+        ]
+        for _case in range(500):
+            config = default_profile_config()
+            config[random.choice(fields)] = random.choice(values)
+            try:
+                EngineRunConfig.from_mapping(config, 3)
+            except RunConfigError:
+                pass
+            except Exception as error:
+                self.fail(f"seed={seed} unexpected {type(error).__name__}: {error}")
+
     def test_engine_cleans_lifecycle_and_callbacks_after_exception(self):
         with mock.patch.object(RPAEngine, "set_high_priority", lambda _self: None):
             engine = RPAEngine()
@@ -405,14 +662,78 @@ class RuntimeFoundationTests(unittest.TestCase):
         self.assertIsNone(engine.callback_click_indicator)
         self.assertEqual(engine.lifecycle.snapshot().last_outcome, "error")
 
-    def test_application_session_detects_stale_marker_and_cleans_own_token(self):
+    def test_application_session_detects_same_build_dead_marker_and_cleans_own_token(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = os.path.join(temp_dir, ".fukuaRPA_session.json")
-            atomic_write_json(marker, {"pid": 2_000_000_000, "token": "old"})
+            atomic_write_json(
+                marker,
+                {
+                    "format": "fukuaRPA_session",
+                    "version": 1,
+                    "pid": 2_000_000_000,
+                    "token": "old",
+                    "build_name": BUILD_NAME,
+                    "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
             session = ApplicationSession(temp_dir).start()
             self.assertTrue(session.previous_unclean)
             self.assertTrue(session.close())
             self.assertFalse(os.path.exists(marker))
+
+    def test_application_session_ignores_dead_marker_from_another_build(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = os.path.join(temp_dir, ".fukuaRPA_session.json")
+            atomic_write_json(
+                marker,
+                {
+                    "format": "fukuaRPA_session",
+                    "version": 1,
+                    "pid": 2_000_000_000,
+                    "token": "old",
+                    "build_name": "fukuaRPA_v0.0.0-test",
+                    "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+
+            session = ApplicationSession(temp_dir).start()
+
+            self.assertFalse(session.previous_unclean)
+            self.assertTrue(session.close())
+
+    def test_application_session_treats_malformed_pid_as_unclean_not_fatal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = os.path.join(temp_dir, ".fukuaRPA_session.json")
+            atomic_write_json(
+                marker,
+                {
+                    "format": "fukuaRPA_session",
+                    "version": 1,
+                    "pid": "not-a-pid",
+                    "token": "old",
+                },
+            )
+
+            session = ApplicationSession(temp_dir).start()
+
+            self.assertTrue(session.previous_unclean)
+            self.assertEqual(session.previous_details["pid"], "not-a-pid")
+            self.assertTrue(session.close())
+
+    def test_application_session_treats_duplicate_marker_fields_as_unclean(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = os.path.join(temp_dir, ".fukuaRPA_session.json")
+            with open(marker, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"format":"fukuaRPA_session","version":1,'
+                    '"pid":123,"pid":456,"token":"old"}'
+                )
+
+            session = ApplicationSession(temp_dir).start()
+
+            self.assertTrue(session.previous_unclean)
+            self.assertIn("重复字段", session.previous_details["_marker_error"])
+            self.assertTrue(session.close())
 
     def test_single_instance_mutex_is_scoped_to_portable_directory(self):
         with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
@@ -539,10 +860,36 @@ class SchedulingAndValidationTests(unittest.TestCase):
         error = validate_task_list(config["tasks"], config)
         self.assertIn("步进频率", error)
 
+    def test_pure_validator_rejects_missing_custom_screenshot_region(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = default_profile_config()
+            task = {
+                "type": 9.0,
+                "value": temp_dir,
+                "capture_region_mode": "custom",
+                "capture_region": "",
+            }
+            error = validate_task_list([task], config)
+        self.assertIn("自定义截图区域", error)
+
     def test_pure_validator_rejects_unknown_command(self):
         config = default_profile_config()
         config["tasks"] = [{"type": 999.0, "value": "x"}]
         self.assertIn("未注册", validate_task_list(config["tasks"], config))
+
+    def test_pure_validator_ignores_disabled_steps_but_requires_one_enabled_step(self):
+        config = default_profile_config()
+        disabled_invalid = {
+            "type": 999.0,
+            "value": "invalid",
+            "step_disabled": True,
+        }
+        enabled = {"type": 4.0, "value": "text"}
+        self.assertIsNone(validate_task_list([disabled_invalid, enabled], config))
+        self.assertIn(
+            "没有已启用的步骤",
+            validate_task_list([disabled_invalid], config),
+        )
 
     def test_uia_actions_require_binding_and_read_variable_name(self):
         config = default_profile_config()

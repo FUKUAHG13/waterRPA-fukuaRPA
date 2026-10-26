@@ -7,15 +7,42 @@ $buildDir = Join-Path $PSScriptRoot "build"
 $vcvarsCandidates = @(
     "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
     "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+    # LEGACY: 仅历史兼容，新机器走 vswhere 自动发现。勿删除（向后兼容旧开发环境）。
     "E:\GongJv\Visual_Studio\VC\Auxiliary\Build\vcvars64.bat"
 )
 
 $vcvars = $vcvarsCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $vcvars) {
+    $vswhereCandidates = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
+    )
+    $vswhere = $vswhereCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($vswhere) {
+        $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if ($installPath) {
+            $discovered = Join-Path $installPath "VC\Auxiliary\Build\vcvars64.bat"
+            if (Test-Path $discovered) {
+                $vcvars = $discovered
+            }
+        }
+    }
+}
+if (-not $vcvars) {
     throw "Cannot find vcvars64.bat. Install Visual Studio Build Tools with C++ workload."
 }
 
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+
+# Remove stale output DLL to avoid LNK1104 if a previous process holds it.
+if (Test-Path -LiteralPath $out) {
+    try {
+        Remove-Item -LiteralPath $out -Force
+    } catch {
+        throw "Cannot remove $out — the file is locked by another process. Close any running fukuaRPA instance or test host, then retry."
+    }
+}
+
 $obj = Join-Path $buildDir "fukua_rpa_core.obj"
 $implib = Join-Path $buildDir "fukua_rpa_core.lib"
 $dependencyReport = Join-Path $buildDir "fukua_rpa_core.dependencies.txt"

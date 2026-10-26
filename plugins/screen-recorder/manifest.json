@@ -1,0 +1,230 @@
+{
+  "format": "fukuaRPA.plugin",
+  "manifest_version": 1,
+  "id": "screen-recorder",
+  "name": "屏幕录制与视频取证",
+  "version": "1.1.0",
+  "author": "fukuaRPA 社区插件",
+  "plugin_type": "python_action",
+  "_note_p2": "P2 阶段：当前为 Python 实现（python_action），非 WASM 沙箱",
+  "api_version": 1,
+  "min_app_version": "1.0.0",
+  "entrypoint": "src/screen_recorder/action.py:run",
+  "permissions": [
+    "screen.capture_region",
+    "files.user_selected",
+    "files.plugin_private_data",
+    "process.launch_confirmed"
+  ],
+  "dependencies": [],
+  "templates": [],
+  "actions": [
+    {
+      "id": "recorder_start",
+      "name": "开始屏幕录制",
+      "description": "开始录制屏幕（可选区域、帧率、音轨）。默认用 mss+opencv 软编码后端，纯离线、支持暂停/恢复。",
+      "permissions": [
+        "screen.capture_region",
+        "files.user_selected",
+        "files.plugin_private_data",
+        "process.launch_confirmed"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "output_path": {
+            "type": "string",
+            "title": "视频保存路径（含扩展名）"
+          },
+          "output_dir": {
+            "type": "string",
+            "title": "输出目录（自动命名，插件私有目录优先）"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "mp4",
+              "avi"
+            ],
+            "default": "mp4"
+          },
+          "fps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60,
+            "default": 15
+          },
+          "region": {
+            "type": "object",
+            "title": "录制区域 {x,y,width,height}，省略则全屏"
+          },
+          "audio": {
+            "type": "boolean",
+            "default": false,
+            "description": "是否录制音轨。仅 ffmpeg 后端支持音频录制；默认 mss 后端忽略此参数。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "recording": {
+            "type": "boolean"
+          },
+          "output_path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "id": "recorder_pause",
+      "name": "暂停录制",
+      "description": "暂停当前录制（仅 mss 后端支持；ffmpeg 后端会明确报错）。",
+      "permissions": [
+        "screen.capture_region"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "recording": {
+            "type": "boolean"
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "id": "recorder_resume",
+      "name": "恢复录制",
+      "description": "从暂停状态恢复录制（仅 mss 后端支持）。",
+      "permissions": [
+        "screen.capture_region"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "recording": {
+            "type": "boolean"
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "id": "recorder_stop",
+      "name": "停止录制并取证",
+      "description": "停止录制，返回输出路径、时长、帧数与文件大小，用于视频取证归档。",
+      "permissions": [
+        "screen.capture_region",
+        "files.plugin_private_data"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "recording": {
+            "type": "boolean"
+          },
+          "output_path": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "frames": {
+            "type": "integer"
+          },
+          "file_bytes": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "id": "recorder_snapshot",
+      "name": "屏幕单帧截图",
+      "description": "抓取当前屏幕（可选区域）保存为 PNG，独立于录制会话，常用于取证留证。",
+      "permissions": [
+        "screen.capture_region",
+        "files.user_selected",
+        "files.plugin_private_data",
+        "process.launch_confirmed"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "截图保存路径（.png）"
+          },
+          "output_dir": {
+            "type": "string",
+            "title": "输出目录（自动命名）"
+          },
+          "region": {
+            "type": "object",
+            "title": "截图区域 {x,y,width,height}，省略则全屏"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "ee1bb1cfed6aca58e9f546708f8cfe267ec852fced99af271c7c89d986631043"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "d38bf77cd10e83950fd5f4fd9629fdf252cfe8a7614c02ed9e780cf4501e4f9c"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "fbb64eecc35d2d2f59c614960edbb35db40acdd834499db62e28c6360e0cbc24"
+    },
+    {
+      "path": "src/screen_recorder/__init__.py",
+      "sha256": "4abb0dfe325c30f509ae7ed3105d0ce13d18ebac81513b6249c1cbadb1ff471e"
+    },
+    {
+      "path": "src/screen_recorder/action.py",
+      "sha256": "36d8ca0fa1bde69e647f636c383ef857750490eb6402daf33882441b020c1e85"
+    },
+    {
+      "path": "src/screen_recorder/backend.py",
+      "sha256": "8f725bb518ff25a2faa78f36c36bea7c1f837a3d1f789620ead0502dc1292706"
+    },
+    {
+      "path": "src/screen_recorder/engine.py",
+      "sha256": "c838ea57f6272f04976d51ac5e905ed6730449971d146f41045ecabc3e07e2f5"
+    },
+    {
+      "path": "src/screen_recorder/models.py",
+      "sha256": "3b3db113cca8986bfa3b1d9e0b3d0b7f8a8de33f5f571d959d066e51f9ff9f3f"
+    }
+  ]
+}

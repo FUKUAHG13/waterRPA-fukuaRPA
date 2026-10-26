@@ -5,8 +5,10 @@
 #include <dxgi1_2.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -69,6 +71,9 @@ enum WrpaCapability : std::uint64_t {
     WRPA_CAP_EXPLICIT_SCALE_ONLY = 1ull << 14,
     WRPA_CAP_LOW_RES_SCENE_FINGERPRINT = 1ull << 15,
     WRPA_CAP_DXGI_SCENE_CHANGE = 1ull << 16,
+    WRPA_CAP_CANCELLABLE_SEARCH = 1ull << 17,
+    WRPA_CAP_OPENCV_COLOR_SEMANTICS = 1ull << 18,
+    WRPA_CAP_RAW_RGB_CAPTURE = 1ull << 19,
 };
 
 enum WrpaBuildFlag : std::uint64_t {
@@ -119,6 +124,11 @@ static std::atomic<std::int64_t> g_perf_template_microseconds{0};
 static std::atomic<std::int64_t> g_perf_match_microseconds{0};
 static std::atomic<std::int64_t> g_perf_cache_bytes{0};
 static std::atomic<std::int64_t> g_perf_cache_entries{0};
+static std::atomic<std::uint64_t> g_cancel_generation{0};
+
+static bool search_cancelled(std::uint64_t generation) {
+    return g_cancel_generation.load(std::memory_order_relaxed) != generation;
+}
 
 struct DesktopDuplicationTarget {
     IDXGIOutputDuplication* duplication = nullptr;
@@ -365,6 +375,10 @@ static int poll_desktop_duplications(
             watched_change = true;
         }
     }
+    // ACCESS_LOST: discard any changes detected this round (conservative).
+    // Rationale: duplication must be re-created; stale change flags from
+    // a lost session are unreliable. Delaying wake by one poll (~30-70ms)
+    // is acceptable since scene wake is a pure optimization path.
     if (access_lost) {
         release_desktop_duplications();
         err = L"desktop duplication access lost";
@@ -394,6 +408,8 @@ static bool ensure_gdiplus(std::wstring& err) {
     static ULONG_PTR token = 0;
     std::call_once(once, []() {
         GdiplusStartupInput input;
+        // GDI+ is initialized once per process lifetime. No GdiplusShutdown needed:
+        // the DLL is never unloaded before process exit (OS reclaims all resources).
         status = GdiplusStartup(&token, &input, nullptr);
     });
     if (status != Ok) {
@@ -647,53 +663,79 @@ static void build_integral(
     const int h = screen.h;
     const int ch = screen.channels;
     const int stride = w + 1;
-    sum.assign(static_cast<size_t>(stride) * (h + 1), 0.0);
-    sqsum.assign(static_cast<size_t>(stride) * (h + 1), 0.0);
+    const size_t plane_size = static_cast<size_t>(stride) * (h + 1);
+    sum.assign(plane_size * ch, 0.0);
+    sqsum.assign(plane_size * ch, 0.0);
 
-    for (int y = 1; y <= h; ++y) {
-        double row_sum = 0.0;
-        double row_sq = 0.0;
-        for (int x = 1; x <= w; ++x) {
-            const size_t px_idx = (static_cast<size_t>(y - 1) * w + (x - 1)) * ch;
-            double px_sum = 0.0;
-            double px_sq = 0.0;
-            for (int c = 0; c < ch; ++c) {
-                const double v = static_cast<double>(screen.data[px_idx + c]);
-                px_sum += v;
-                px_sq += v * v;
+    // OpenCV's color TM_CCOEFF_NORMED subtracts a separate mean from each
+    // channel. Keeping one integral plane per channel preserves that contract.
+    for (int c = 0; c < ch; ++c) {
+        const size_t plane_offset = plane_size * c;
+        for (int y = 1; y <= h; ++y) {
+            double row_sum = 0.0;
+            double row_sq = 0.0;
+            for (int x = 1; x <= w; ++x) {
+                const size_t px_idx = (
+                    static_cast<size_t>(y - 1) * w + (x - 1)
+                ) * ch + c;
+                const double value = static_cast<double>(screen.data[px_idx]);
+                row_sum += value;
+                row_sq += value * value;
+                const size_t idx = plane_offset
+                    + static_cast<size_t>(y) * stride + x;
+                sum[idx] = sum[idx - stride] + row_sum;
+                sqsum[idx] = sqsum[idx - stride] + row_sq;
             }
-            row_sum += px_sum;
-            row_sq += px_sq;
-            const size_t idx = static_cast<size_t>(y) * stride + x;
-            sum[idx] = sum[idx - stride] + row_sum;
-            sqsum[idx] = sqsum[idx - stride] + row_sq;
         }
     }
 }
 
-static double rect_integral_sum(const std::vector<double>& integral, int stride, int x, int y, int w, int h) {
+static double rect_integral_sum(
+    const std::vector<double>& integral,
+    int stride,
+    size_t plane_size,
+    int channel,
+    int x,
+    int y,
+    int w,
+    int h
+) {
     const int x2 = x + w;
     const int y2 = y + h;
-    return integral[static_cast<size_t>(y2) * stride + x2]
-        - integral[static_cast<size_t>(y) * stride + x2]
-        - integral[static_cast<size_t>(y2) * stride + x]
-        + integral[static_cast<size_t>(y) * stride + x];
+    const size_t offset = plane_size * channel;
+    return integral[offset + static_cast<size_t>(y2) * stride + x2]
+        - integral[offset + static_cast<size_t>(y) * stride + x2]
+        - integral[offset + static_cast<size_t>(y2) * stride + x]
+        + integral[offset + static_cast<size_t>(y) * stride + x];
 }
 
-static bool template_stats(const PixelImage& templ, double& mean, double& var) {
-    const size_t n = templ.data.size();
-    if (n == 0) {
+static bool template_stats(
+    const PixelImage& templ,
+    std::array<double, 3>& means,
+    double& var
+) {
+    const size_t pixel_count = static_cast<size_t>(templ.w) * templ.h;
+    if (pixel_count == 0 || templ.channels < 1 || templ.channels > 3) {
         return false;
     }
-    double sum = 0.0;
-    double sq = 0.0;
-    for (unsigned char v : templ.data) {
-        const double d = static_cast<double>(v);
-        sum += d;
-        sq += d * d;
+    std::array<double, 3> sums{};
+    std::array<double, 3> square_sums{};
+    for (size_t pixel = 0; pixel < pixel_count; ++pixel) {
+        for (int channel = 0; channel < templ.channels; ++channel) {
+            const double value = static_cast<double>(
+                templ.data[pixel * templ.channels + channel]
+            );
+            sums[channel] += value;
+            square_sums[channel] += value * value;
+        }
     }
-    mean = sum / static_cast<double>(n);
-    var = sq - (sum * sum / static_cast<double>(n));
+    means.fill(0.0);
+    var = 0.0;
+    const double count = static_cast<double>(pixel_count);
+    for (int channel = 0; channel < templ.channels; ++channel) {
+        means[channel] = sums[channel] / count;
+        var += square_sums[channel] - (sums[channel] * sums[channel] / count);
+    }
     return var > 1e-6;
 }
 
@@ -731,14 +773,15 @@ struct MatchPlan {
     const CapturedRegion* captured = nullptr;
     const PixelImage* templ = nullptr;
     double scale = 1.0;
-    double templ_mean = 0.0;
+    std::array<double, 3> templ_means{};
     double templ_var = 0.0;
-    double sample_count = 0.0;
+    double pixel_count = 0.0;
     double radius = 4.0;
     double work = 0.0;
     int result_w = 0;
     int result_h = 0;
     int integral_stride = 0;
+    size_t integral_plane_size = 0;
 };
 
 struct MatchJob {
@@ -776,22 +819,24 @@ static bool build_match_plan(
         return false;
     }
 
-    double templ_mean = 0.0;
+    std::array<double, 3> templ_means{};
     double templ_var = 0.0;
-    if (!template_stats(templ, templ_mean, templ_var)) {
+    if (!template_stats(templ, templ_means, templ_var)) {
         return false;
     }
 
     out.captured = &captured;
     out.templ = &templ;
     out.scale = scale;
-    out.templ_mean = templ_mean;
+    out.templ_means = templ_means;
     out.templ_var = templ_var;
-    out.sample_count = static_cast<double>(templ.w) * templ.h * templ.channels;
+    out.pixel_count = static_cast<double>(templ.w) * templ.h;
     out.radius = std::max(4.0, std::min(templ.w, templ.h) * 0.55);
     out.result_w = captured.screen.w - templ.w + 1;
     out.result_h = captured.screen.h - templ.h + 1;
     out.integral_stride = captured.screen.w + 1;
+    out.integral_plane_size = static_cast<size_t>(out.integral_stride)
+        * (captured.screen.h + 1);
     out.work = static_cast<double>(out.result_w) * out.result_h
         * templ.w * templ.h * templ.channels;
     return true;
@@ -803,7 +848,8 @@ static void match_job(
     double threshold,
     bool find_all,
     int max_matches,
-    std::vector<Candidate>& out
+    std::vector<Candidate>& out,
+    std::uint64_t cancel_generation
 ) {
     const CapturedRegion& captured = *plan.captured;
     const PixelImage& screen = captured.screen;
@@ -813,21 +859,49 @@ static void match_job(
     Candidate best;
 
     for (int y = job.y0; y < job.y1; ++y) {
+        if (search_cancelled(cancel_generation)) {
+            return;
+        }
         for (int x = 0; x < plan.result_w; ++x) {
-            const double ssum = rect_integral_sum(
-                captured.sum, plan.integral_stride, x, y, templ.w, templ.h
-            );
-            const double ssq = rect_integral_sum(
-                captured.sqsum, plan.integral_stride, x, y, templ.w, templ.h
-            );
-            const double svar = ssq - (ssum * ssum / plan.sample_count);
+            if ((x & 31) == 0 && search_cancelled(cancel_generation)) {
+                return;
+            }
+            double svar = 0.0;
+            double mean_correction = 0.0;
+            for (int channel = 0; channel < screen.channels; ++channel) {
+                const double ssum = rect_integral_sum(
+                    captured.sum,
+                    plan.integral_stride,
+                    plan.integral_plane_size,
+                    channel,
+                    x,
+                    y,
+                    templ.w,
+                    templ.h
+                );
+                const double ssq = rect_integral_sum(
+                    captured.sqsum,
+                    plan.integral_stride,
+                    plan.integral_plane_size,
+                    channel,
+                    x,
+                    y,
+                    templ.w,
+                    templ.h
+                );
+                svar += ssq - (ssum * ssum / plan.pixel_count);
+                mean_correction += plan.templ_means[channel] * ssum;
+            }
             if (svar <= 1e-6) {
                 continue;
             }
 
             const double dot = dot_at(screen, templ, x, y);
-            const double cov = dot - plan.templ_mean * ssum;
-            const double score = cov / std::sqrt(plan.templ_var * svar);
+            const double cov = dot - mean_correction;
+            const double score = std::max(
+                -1.0,
+                std::min(1.0, cov / std::sqrt(plan.templ_var * svar))
+            );
             Candidate candidate{
                 static_cast<double>(captured.rect.x + x + templ.w / 2.0),
                 static_cast<double>(captured.rect.y + y + templ.h / 2.0),
@@ -878,16 +952,17 @@ static int choose_worker_count(
     return std::min(maximum, useful);
 }
 
-static void run_match_plans(
+static bool run_match_plans(
     const std::vector<MatchPlan>& plans,
     int parallel_mode,
     double threshold,
     bool find_all,
     int max_matches,
-    std::vector<Candidate>& out
+    std::vector<Candidate>& out,
+    std::uint64_t cancel_generation
 ) {
     if (plans.empty()) {
-        return;
+        return !search_cancelled(cancel_generation);
     }
 
     const int worker_count = choose_worker_count(plans, parallel_mode);
@@ -917,43 +992,78 @@ static void run_match_plans(
         }
     }
     if (jobs.empty()) {
-        return;
+        return !search_cancelled(cancel_generation);
     }
 
     const int active_workers = std::min<int>(worker_count, static_cast<int>(jobs.size()));
     std::atomic<size_t> next_job{0};
     std::vector<std::vector<Candidate>> job_results(jobs.size());
+    std::exception_ptr worker_error;
+    std::mutex error_mutex;
+    std::atomic<bool> has_worker_error{false};
     auto worker = [&]() {
         while (true) {
+            if (search_cancelled(cancel_generation)
+                || has_worker_error.load(std::memory_order_relaxed)) {
+                break;
+            }
             const size_t index = next_job.fetch_add(1, std::memory_order_relaxed);
             if (index >= jobs.size()) {
                 break;
             }
             const MatchJob& job = jobs[index];
-            match_job(
-                plans[job.plan_index],
-                job,
-                threshold,
-                find_all,
-                max_matches,
-                job_results[index]
-            );
+            try {
+                match_job(
+                    plans[job.plan_index],
+                    job,
+                    threshold,
+                    find_all,
+                    max_matches,
+                    job_results[index],
+                    cancel_generation
+                );
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(error_mutex);
+                if (!worker_error) {
+                    worker_error = std::current_exception();
+                }
+                has_worker_error.store(true, std::memory_order_relaxed);
+                break;
+            }
         }
     };
 
     std::vector<std::thread> threads;
     threads.reserve(static_cast<size_t>(std::max(0, active_workers - 1)));
-    for (int index = 1; index < active_workers; ++index) {
-        threads.emplace_back(worker);
+    try {
+        for (int index = 1; index < active_workers; ++index) {
+            threads.emplace_back(worker);
+        }
+    } catch (...) {
+        for (std::thread& thread : threads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        throw;
     }
     worker();
     for (std::thread& thread : threads) {
         thread.join();
     }
 
+    if (worker_error) {
+        std::rethrow_exception(worker_error);
+    }
+
+    if (search_cancelled(cancel_generation)) {
+        return false;
+    }
+
     for (std::vector<Candidate>& result : job_results) {
         out.insert(out.end(), result.begin(), result.end());
     }
+    return true;
 }
 
 static std::vector<double> build_scales(double min_scale, double max_scale, double scale_step) {
@@ -1000,6 +1110,8 @@ struct TemplateCacheEntry {
 
 static constexpr size_t kTemplateCacheMaxBytes = 256ull * 1024ull * 1024ull;
 static constexpr size_t kTemplateCacheMaxEntries = 64;
+static constexpr double kWorkBudgetFindAll = 120000000.0;
+static constexpr double kWorkBudgetSingle = 180000000.0;
 static std::mutex g_template_cache_mutex;
 static std::list<TemplateCacheEntry> g_template_cache_lru;
 static std::unordered_map<
@@ -1066,8 +1178,13 @@ static std::shared_ptr<const TemplateSet> get_template_set(
     const wchar_t* image_path,
     bool use_gray,
     const std::vector<double>& scales,
-    std::wstring& err
+    std::wstring& err,
+    std::uint64_t cancel_generation
 ) {
+    if (search_cancelled(cancel_generation)) {
+        err = L"native search cancelled";
+        return nullptr;
+    }
     std::wstring key;
     std::wstring normalized_path;
     if (!template_cache_key(
@@ -1103,6 +1220,10 @@ static std::shared_ptr<const TemplateSet> get_template_set(
     auto built = std::make_shared<TemplateSet>();
     built->variants.reserve(scales.size());
     for (double scale : scales) {
+        if (search_cancelled(cancel_generation)) {
+            err = L"native search cancelled";
+            return nullptr;
+        }
         PixelImage image;
         if (!bitmap_to_image(bitmap, scale, use_gray, image, err)) {
             continue;
@@ -1160,9 +1281,21 @@ static std::shared_ptr<const TemplateSet> get_template_set(
 
 static std::vector<WrpaRect> build_regions(const WrpaRect* regions, int region_count) {
     std::vector<WrpaRect> out;
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     for (int i = 0; i < region_count; ++i) {
         WrpaRect r = regions[i];
         if (r.w > 0 && r.h > 0) {
+            // Clip to virtual screen boundary.
+            r.x = (std::max)(r.x, vx);
+            r.y = (std::max)(r.y, vy);
+            int right = (std::min)(r.x + r.w, vx + vw);
+            int bottom = (std::min)(r.y + r.h, vy + vh);
+            r.w = right - r.x;
+            r.h = bottom - r.y;
+            if (r.w <= 0 || r.h <= 0) continue;  // Entirely outside virtual screen.
             out.push_back(r);
         }
     }
@@ -1197,6 +1330,9 @@ static void sort_and_suppress(std::vector<Candidate>& candidates, bool find_all,
 
     std::vector<Candidate> accepted;
     accepted.reserve(static_cast<size_t>(max_matches));
+    // NMS suppression: O(accepted * candidates) worst case.
+    // Bounded by max_matches (at most 4096) and per-job candidate reserve,
+    // so actual iterations are far below theoretical maximum.
     for (const Candidate& c : candidates) {
         bool too_close = false;
         for (const Candidate& a : accepted) {
@@ -1219,7 +1355,7 @@ static void sort_and_suppress(std::vector<Candidate>& candidates, bool find_all,
 }
 
 extern "C" __declspec(dllexport) int wrpa_version() {
-    return 11200;
+    return 11500;
 }
 
 extern "C" __declspec(dllexport) std::uint64_t wrpa_capabilities() {
@@ -1239,7 +1375,14 @@ extern "C" __declspec(dllexport) std::uint64_t wrpa_capabilities() {
         | WRPA_CAP_PREFERRED_SCALE_LIST
         | WRPA_CAP_EXPLICIT_SCALE_ONLY
         | WRPA_CAP_LOW_RES_SCENE_FINGERPRINT
-        | WRPA_CAP_DXGI_SCENE_CHANGE;
+        | WRPA_CAP_DXGI_SCENE_CHANGE
+        | WRPA_CAP_CANCELLABLE_SEARCH
+        | WRPA_CAP_OPENCV_COLOR_SEMANTICS
+        | WRPA_CAP_RAW_RGB_CAPTURE;
+}
+
+extern "C" __declspec(dllexport) void wrpa_cancel_active_search() {
+    g_cancel_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 extern "C" __declspec(dllexport) int wrpa_abi_bits() {
@@ -1280,24 +1423,32 @@ extern "C" __declspec(dllexport) std::uint64_t wrpa_build_flags() {
 }
 
 extern "C" __declspec(dllexport) void wrpa_reset_perf_stats() {
-    g_perf_calls.store(0, std::memory_order_relaxed);
-    g_perf_captures.store(0, std::memory_order_relaxed);
-    g_perf_integral_builds.store(0, std::memory_order_relaxed);
-    g_perf_template_cache_hits.store(0, std::memory_order_relaxed);
-    g_perf_template_cache_misses.store(0, std::memory_order_relaxed);
-    g_perf_template_variants_built.store(0, std::memory_order_relaxed);
-    g_perf_work_budget_fallbacks.store(0, std::memory_order_relaxed);
-    g_perf_capture_microseconds.store(0, std::memory_order_relaxed);
-    g_perf_template_microseconds.store(0, std::memory_order_relaxed);
-    g_perf_match_microseconds.store(0, std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(g_template_cache_mutex);
-    g_perf_cache_bytes.store(
-        static_cast<std::int64_t>(g_template_cache_bytes), std::memory_order_relaxed
-    );
-    g_perf_cache_entries.store(
-        static_cast<std::int64_t>(g_template_cache_lru.size()),
-        std::memory_order_relaxed
-    );
+    try {
+        g_perf_calls.store(0, std::memory_order_relaxed);
+        g_perf_captures.store(0, std::memory_order_relaxed);
+        g_perf_integral_builds.store(0, std::memory_order_relaxed);
+        g_perf_template_cache_hits.store(0, std::memory_order_relaxed);
+        g_perf_template_cache_misses.store(0, std::memory_order_relaxed);
+        g_perf_template_variants_built.store(0, std::memory_order_relaxed);
+        g_perf_work_budget_fallbacks.store(0, std::memory_order_relaxed);
+        g_perf_capture_microseconds.store(0, std::memory_order_relaxed);
+        g_perf_template_microseconds.store(0, std::memory_order_relaxed);
+        g_perf_match_microseconds.store(0, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(g_template_cache_mutex);
+        g_perf_cache_bytes.store(
+            static_cast<std::int64_t>(g_template_cache_bytes), std::memory_order_relaxed
+        );
+        g_perf_cache_entries.store(
+            static_cast<std::int64_t>(g_template_cache_lru.size()),
+            std::memory_order_relaxed
+        );
+    } catch (const std::bad_alloc&) {
+        // silent - reset is best-effort
+    } catch (const std::system_error&) {
+        // silent
+    } catch (...) {
+        // silent
+    }
 }
 
 extern "C" __declspec(dllexport) int wrpa_get_perf_stats(WrpaPerfStats* out_stats) {
@@ -1319,6 +1470,69 @@ extern "C" __declspec(dllexport) int wrpa_get_perf_stats(WrpaPerfStats* out_stat
     return 0;
 }
 
+extern "C" __declspec(dllexport) int wrpa_get_virtual_screen_rect(
+    WrpaRect* out_rect,
+    wchar_t* err_buf,
+    int err_len
+) {
+    if (!out_rect) {
+        set_error(err_buf, err_len, L"invalid virtual screen output");
+        return -1;
+    }
+    WrpaRect rect{
+        GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        GetSystemMetrics(SM_CYVIRTUALSCREEN),
+    };
+    if (rect.w <= 0 || rect.h <= 0) {
+        set_error(err_buf, err_len, L"invalid virtual screen dimensions");
+        return -1;
+    }
+    *out_rect = rect;
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int wrpa_capture_rgb(
+    const WrpaRect* region,
+    unsigned char* out_pixels,
+    int out_capacity,
+    wchar_t* err_buf,
+    int err_len
+) {
+    if (!region || !out_pixels || region->w <= 0 || region->h <= 0) {
+        set_error(err_buf, err_len, L"invalid RGB capture arguments");
+        return -1;
+    }
+    const std::int64_t required = static_cast<std::int64_t>(region->w)
+        * static_cast<std::int64_t>(region->h) * 3;
+    if (required <= 0 || required > INT_MAX || out_capacity < required) {
+        set_error(err_buf, err_len, L"RGB capture buffer is too small");
+        return -1;
+    }
+
+    try {
+        PixelImage captured;
+        std::wstring err;
+        if (!capture_rect(*region, false, captured, err)) {
+            set_error(err_buf, err_len, err);
+            return -1;
+        }
+        for (std::int64_t index = 0; index < required; index += 3) {
+            out_pixels[index + 0] = captured.data[static_cast<size_t>(index + 2)];
+            out_pixels[index + 1] = captured.data[static_cast<size_t>(index + 1)];
+            out_pixels[index + 2] = captured.data[static_cast<size_t>(index + 0)];
+        }
+        return 1;
+    } catch (const std::bad_alloc&) {
+        set_error(err_buf, err_len, L"out of memory");
+        return -1;
+    } catch (...) {
+        set_error(err_buf, err_len, L"internal error");
+        return -1;
+    }
+}
+
 extern "C" __declspec(dllexport) int wrpa_capture_gray_fingerprint(
     const WrpaRect* region,
     int target_w,
@@ -1331,21 +1545,29 @@ extern "C" __declspec(dllexport) int wrpa_capture_gray_fingerprint(
     if (
         !region || !out_pixels
         || target_w <= 0 || target_h <= 0
-        || out_capacity < target_w * target_h
+        || out_capacity < static_cast<std::int64_t>(target_w) * static_cast<std::int64_t>(target_h)
     ) {
         set_error(err_buf, err_len, L"invalid fingerprint arguments");
         return -1;
     }
-    std::wstring err;
-    std::vector<unsigned char> fingerprint;
-    if (!capture_gray_fingerprint(
-        *region, target_w, target_h, fingerprint, err
-    )) {
-        set_error(err_buf, err_len, err);
+    try {
+        std::wstring err;
+        std::vector<unsigned char> fingerprint;
+        if (!capture_gray_fingerprint(
+            *region, target_w, target_h, fingerprint, err
+        )) {
+            set_error(err_buf, err_len, err);
+            return -1;
+        }
+        std::copy(fingerprint.begin(), fingerprint.end(), out_pixels);
+        return 1;
+    } catch (const std::bad_alloc&) {
+        set_error(err_buf, err_len, L"out of memory");
+        return -1;
+    } catch (...) {
+        set_error(err_buf, err_len, L"internal error");
         return -1;
     }
-    std::copy(fingerprint.begin(), fingerprint.end(), out_pixels);
-    return 1;
 }
 
 extern "C" __declspec(dllexport) int wrpa_poll_desktop_change(
@@ -1355,18 +1577,26 @@ extern "C" __declspec(dllexport) int wrpa_poll_desktop_change(
     wchar_t* err_buf,
     int err_len
 ) {
-    std::lock_guard<std::mutex> lock(g_desktop_duplication_mutex);
-    std::wstring err;
-    const int result = poll_desktop_duplications(
-        regions,
-        std::max(0, region_count),
-        reset_baseline != 0,
-        err
-    );
-    if (result < 0) {
-        set_error(err_buf, err_len, err);
+    try {
+        std::lock_guard<std::mutex> lock(g_desktop_duplication_mutex);
+        std::wstring err;
+        const int result = poll_desktop_duplications(
+            regions,
+            std::max(0, region_count),
+            reset_baseline != 0,
+            err
+        );
+        if (result < 0) {
+            set_error(err_buf, err_len, err);
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        set_error(err_buf, err_len, L"out of memory");
+        return -1;
+    } catch (...) {
+        set_error(err_buf, err_len, L"internal error");
+        return -1;
     }
-    return result;
 }
 
 static int wrpa_find_template_impl(
@@ -1389,6 +1619,9 @@ static int wrpa_find_template_impl(
     wchar_t* err_buf,
     int err_len
 ) {
+    const std::uint64_t cancel_generation = g_cancel_generation.load(
+        std::memory_order_relaxed
+    );
     g_perf_calls.fetch_add(1, std::memory_order_relaxed);
     if (out_count) {
         *out_count = 0;
@@ -1398,6 +1631,7 @@ static int wrpa_find_template_impl(
         return -1;
     }
 
+    try {
     std::wstring err;
     if (!ensure_gdiplus(err)) {
         set_error(err_buf, err_len, err);
@@ -1417,15 +1651,19 @@ static int wrpa_find_template_impl(
 
     std::vector<double> scales = build_scales(min_scale, max_scale, scale_step);
     std::shared_ptr<const TemplateSet> templates = get_template_set(
-        image_path, use_gray != 0, scales, err
+        image_path, use_gray != 0, scales, err, cancel_generation
     );
     if (!templates) {
+        if (search_cancelled(cancel_generation)) {
+            set_error(err_buf, err_len, L"native search cancelled");
+            return -3;
+        }
         set_error(err_buf, err_len, err);
         return -1;
     }
     std::vector<WrpaRect> search_regions = build_regions(regions, region_count);
     std::vector<Candidate> candidates;
-    const double budget = find_all ? 120000000.0 : 180000000.0;
+    const double budget = find_all ? kWorkBudgetFindAll : kWorkBudgetSingle;
     const auto is_preferred_variant = [&](const TemplateVariant& variant) {
         for (int index = 0; index < preferred_count; ++index) {
             const double preferred = preferred_scales[index];
@@ -1442,9 +1680,27 @@ static int wrpa_find_template_impl(
     const auto variant_is_eligible = [&](const TemplateVariant& variant) {
         return !explicit_scale_only || is_preferred_variant(variant);
     };
+    const bool use_preferred = preferred_count > 0
+        && (find_all == 0 || explicit_scale_only);
+    const auto exceeds_budget = [&](double first, double second = 0.0) {
+        return !std::isfinite(first)
+            || !std::isfinite(second)
+            || first > budget
+            || second > budget - first;
+    };
+    const auto reject_for_budget = [&]() {
+        g_perf_work_budget_fallbacks.fetch_add(
+            1, std::memory_order_relaxed
+        );
+        set_error(err_buf, err_len, L"native aggregate work budget exceeded");
+        return -2;
+    };
 
-    // Any skipped scale/region pair makes the native result non-authoritative.
-    // Detect that before capturing or matching work that would be discarded.
+    // The budget belongs to the complete native call, not an individual
+    // scale/region pair. A preferred-scale hit may finish before the remaining
+    // plans are needed, so account for that second phase only when it runs.
+    double preferred_work = 0.0;
+    double remaining_work = 0.0;
     for (const WrpaRect& region : search_regions) {
         for (const TemplateVariant& variant : templates->variants) {
             if (!variant_is_eligible(variant)) {
@@ -1458,19 +1714,30 @@ static int wrpa_find_template_impl(
             const int rh = region.h - templ.h + 1;
             const double work = static_cast<double>(rw) * rh
                 * templ.w * templ.h * templ.channels;
-            if (work > budget) {
-                g_perf_work_budget_fallbacks.fetch_add(
-                    1, std::memory_order_relaxed
-                );
-                set_error(err_buf, err_len, L"native work budget exceeded");
-                return -2;
+            if (use_preferred && is_preferred_variant(variant)) {
+                preferred_work += work;
+            } else {
+                remaining_work += work;
             }
         }
+    }
+    if (exceeds_budget(preferred_work)) {
+        return reject_for_budget();
+    }
+    if (!use_preferred && exceeds_budget(remaining_work)) {
+        return reject_for_budget();
+    }
+    if (use_preferred && preferred_work <= 0.0 && exceeds_budget(remaining_work)) {
+        return reject_for_budget();
     }
 
     std::vector<CapturedRegion> captured_regions;
     captured_regions.reserve(search_regions.size());
     for (const WrpaRect& region : search_regions) {
+        if (search_cancelled(cancel_generation)) {
+            set_error(err_buf, err_len, L"native search cancelled");
+            return -3;
+        }
         bool needs_capture = false;
         for (const TemplateVariant& variant : templates->variants) {
             if (!variant_is_eligible(variant)) {
@@ -1498,7 +1765,17 @@ static int wrpa_find_template_impl(
             elapsed_microseconds(capture_started), std::memory_order_relaxed
         );
         if (!captured_ok) {
-            continue;
+            set_error(
+                err_buf,
+                err_len,
+                err.empty() ? L"native screen capture failed" : err
+            );
+            return -1;
+        }
+
+        if (search_cancelled(cancel_generation)) {
+            set_error(err_buf, err_len, L"native search cancelled");
+            return -3;
         }
 
         const auto integral_started = std::chrono::steady_clock::now();
@@ -1512,8 +1789,6 @@ static int wrpa_find_template_impl(
 
     std::vector<MatchPlan> preferred_plans;
     std::vector<MatchPlan> remaining_plans;
-    const bool use_preferred = preferred_count > 0
-        && (find_all == 0 || explicit_scale_only);
     for (const TemplateVariant& variant : templates->variants) {
         const bool preferred_variant = use_preferred
             && is_preferred_variant(variant);
@@ -1535,24 +1810,38 @@ static int wrpa_find_template_impl(
 
     const auto match_started = std::chrono::steady_clock::now();
     if (!preferred_plans.empty()) {
-        run_match_plans(
+        if (!run_match_plans(
             preferred_plans,
             parallel_mode,
             threshold,
             false,
             max_matches,
-            candidates
-        );
+            candidates,
+            cancel_generation
+        )) {
+            set_error(err_buf, err_len, L"native search cancelled");
+            return -3;
+        }
     }
     if (candidates.empty() && !explicit_scale_only) {
-        run_match_plans(
+        if (exceeds_budget(preferred_work, remaining_work)) {
+            g_perf_match_microseconds.fetch_add(
+                elapsed_microseconds(match_started), std::memory_order_relaxed
+            );
+            return reject_for_budget();
+        }
+        if (!run_match_plans(
             remaining_plans,
             parallel_mode,
             threshold,
             find_all != 0,
             max_matches,
-            candidates
-        );
+            candidates,
+            cancel_generation
+        )) {
+            set_error(err_buf, err_len, L"native search cancelled");
+            return -3;
+        }
     }
     g_perf_match_microseconds.fetch_add(
         elapsed_microseconds(match_started), std::memory_order_relaxed
@@ -1573,6 +1862,16 @@ static int wrpa_find_template_impl(
     }
     *out_count = count;
     return count > 0 ? 1 : 0;
+    } catch (const std::bad_alloc&) {
+        set_error(err_buf, err_len, L"out of memory");
+        return -1;
+    } catch (const std::system_error&) {
+        set_error(err_buf, err_len, L"system error (thread or resource failure)");
+        return -1;
+    } catch (...) {
+        set_error(err_buf, err_len, L"internal error");
+        return -1;
+    }
 }
 
 extern "C" __declspec(dllexport) int wrpa_find_template(

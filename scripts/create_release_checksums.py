@@ -3,22 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import os
 import re
-import tempfile
+import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.hashutil import atomic_write_text, hash_file  # noqa: E402
 
 CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\\/\r\n]+)$")
-
-
-def hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def build_checksums(paths: list[Path]) -> str:
@@ -59,21 +54,6 @@ def verify_checksums(paths: list[Path], text: str) -> dict:
     return {"verified": True, "file_count": len(paths)}
 
 
-def atomic_write(path: Path, text: str) -> None:
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("files", nargs="+", type=Path)
@@ -97,7 +77,7 @@ def main() -> None:
             raise SystemExit(f"SHA256SUMS verification failed: {error}") from error
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(output, expected)
+        atomic_write_text(output, expected)
     print(expected, end="")
 
 

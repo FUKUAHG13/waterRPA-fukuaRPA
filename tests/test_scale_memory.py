@@ -1,6 +1,6 @@
 import unittest
 
-from fukua_rpa.scale_memory import (
+from fukua_rpa.vision.scale_memory import (
     ScaleMemoryPolicy,
     ScaleMemoryStore,
     parse_manual_scales,
@@ -21,6 +21,44 @@ class ScaleMemoryTests(unittest.TestCase):
             parse_manual_scales("0")
         with self.assertRaises(ValueError):
             parse_manual_scales(" ".join(str(0.1 + i * 0.1) for i in range(13)))
+
+    def test_read_only_lookups_are_bounded_and_count_as_recent_use(self):
+        """REVIEW-20260913-001 FR-003：只读 ``preferred_scales`` 也必须受
+        ``max_entries`` 约束，并把条目记为最近使用。
+
+        此前只读路径插入后既不回收也不刷新 ``updated_sequence``：``_entries``
+        可突破上限，且这些 sequence 恒为 0 的条目会在任意一次 ``record`` 触发的
+        回收中被集体优先淘汰（既非 LRU 也非预期语义）。"""
+        store = ScaleMemoryStore(max_entries=4)
+        policy = ScaleMemoryPolicy(tier="balanced")
+
+        for index in range(20):
+            store.preferred_scales(
+                (f"t{index}.png", 1), f"t{index}.png", self.valid, policy
+            )
+
+        self.assertLessEqual(len(store._entries), 4)
+        labels = {summary.label for summary in store.summaries(policy, maximum=8)}
+        self.assertEqual(
+            labels,
+            {"t16.png", "t17.png", "t18.png", "t19.png"},
+            "只读访问应按最近使用保留，而不是保留最早插入的条目",
+        )
+
+    def test_record_after_read_only_lookups_keeps_recent_summaries(self):
+        """只读与 record 混用时，``summaries`` 仍返回最近使用的条目。"""
+        store = ScaleMemoryStore(max_entries=4)
+        policy = ScaleMemoryPolicy(tier="balanced")
+        for index in range(6):
+            store.preferred_scales(
+                (f"t{index}.png", 1), f"t{index}.png", self.valid, policy
+            )
+
+        store.record(("t5.png", 1), "t5.png", self.valid, 1.0, 0.95, policy)
+
+        labels = {summary.label for summary in store.summaries(policy, maximum=8)}
+        self.assertLessEqual(len(labels), 4)
+        self.assertIn("t5.png", labels, "最近记录的条目必须存活")
 
     def test_manual_scales_precede_frequency_ranked_history(self):
         store = ScaleMemoryStore()

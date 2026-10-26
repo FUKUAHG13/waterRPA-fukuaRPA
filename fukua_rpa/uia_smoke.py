@@ -7,9 +7,9 @@ import multiprocessing
 import os
 import queue
 from ctypes import wintypes
+from typing import Any
 
 from .uia_backend import UIAutomationBackend
-
 
 WM_COMMAND = 0x0111
 WM_DESTROY = 0x0002
@@ -52,7 +52,8 @@ class WNDCLASSW(ctypes.Structure):
     ]
 
 
-def _configure_win32():
+def _configure_win32() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
+    """Bind ctypes prototypes and return the user32 and kernel32 handles."""
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
     user32.DefWindowProcW.argtypes = [
@@ -82,17 +83,32 @@ def _configure_win32():
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
     user32.GetDlgItem.restype = wintypes.HWND
+    # P2-4: GetForegroundWindow 在 64 位 Windows 上返回 64 位 HWND。不声明
+    # restype 时 ctypes 默认 c_int（32 位有符号）会截断句柄，破坏前台窗口
+    # 比对（foreground_before/after 校验）。
+    user32.GetForegroundWindow.restype = wintypes.HWND
     kernel32.GetModuleHandleW.restype = wintypes.HMODULE
     return user32, kernel32
 
 
-def _window_process(events) -> None:
+def _window_process(events: multiprocessing.Queue[Any]) -> None:
+    """Child-process entry point: build a real window and pump its message loop.
+
+    Args:
+        events: Queue used to report ``ready``/``clicked``/``error`` events
+            back to the parent process.
+    """
     user32, kernel32 = _configure_win32()
     instance = kernel32.GetModuleHandleW(None)
     class_name = f"fukuaRPA_UIA_Smoke_{os.getpid()}"
 
     @WNDPROC
-    def window_proc(hwnd, message, wparam, lparam):
+    def window_proc(
+        hwnd: wintypes.HWND,
+        message: wintypes.UINT,
+        wparam: wintypes.WPARAM,
+        lparam: wintypes.LPARAM,
+    ):
         if message == WM_COMMAND and int(wparam) & 0xFFFF == BUTTON_ID:
             events.put(("clicked", int(hwnd)))
             return 0
@@ -179,10 +195,29 @@ def _window_process(events) -> None:
         user32.DispatchMessageW(ctypes.byref(message))
 
 
-def run_uia_smoke() -> dict:
-    """Invoke a real non-activating button and return a JSON-safe report."""
+def run_uia_smoke() -> dict[str, Any]:
+    """Invoke a real non-activating button and return a JSON-safe report.
+
+    Returns:
+        A report dict whose ``ok`` flag is True only when probe, activation,
+        value round-trip, and foreground-unchanged checks all succeed.
+    """
 
     multiprocessing.freeze_support()
+    # FR-20260812-D4-001: 父进程直接调用 GetForegroundWindow 必须声明 64 位
+    # restype，否则句柄 >2^31 时被截断，前台比对失效（restype 不跨进程继承）。
+    ctypes.windll.user32.GetForegroundWindow.restype = wintypes.HWND
+    # FR-SCOPE015D-002: 清理路径（finally）同样在父进程直接调用 PostMessageW。
+    # 未声明 argtypes 时 ctypes 按 c_int 转换 HWND，root_hwnd >= 2^32 会在
+    # finally 中抛 ctypes.ArgumentError；finally 的异常会**覆盖**正常返回值，
+    # 使一次成功的冒烟变成异常退出。此处与 native_smoke._configure_win32 保持一致。
+    ctypes.windll.user32.PostMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    ctypes.windll.user32.PostMessageW.restype = wintypes.BOOL
     events = multiprocessing.Queue()
     process = multiprocessing.Process(
         target=_window_process,

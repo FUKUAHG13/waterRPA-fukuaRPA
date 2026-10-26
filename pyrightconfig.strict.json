@@ -1,0 +1,16 @@
+{
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "strict",
+  "include": [
+    "fukua_rpa/io_utils.py",
+    "fukua_rpa/json_safety.py",
+    "fukua_rpa/privacy.py",
+    "fukua_rpa/expressions.py",
+    "fukua_rpa/credentials.py",
+    "fukua_rpa/config_schema.py",
+    "fukua_rpa/profile_model.py",
+    "fukua_rpa/profile_structure.py"
+  ],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}
