@@ -22,6 +22,8 @@ from .log_policy import (
 )
 from .workflow_document import normalize_workflow_tasks
 
+DEFAULT_RUN_STATUS_OPACITY = 100
+
 
 class UnsupportedProfileVersion(ValueError):
     """Raised when a profile was written by a newer, unsupported application."""
@@ -42,6 +44,12 @@ class MigrationResult:
     changed: bool
     source_version: int
     target_version: int = PROFILE_SCHEMA_VERSION
+
+
+def normalize_run_status_opacity(value: object) -> int:
+    if type(value) is int and 0 <= value <= 100:
+        return value
+    return DEFAULT_RUN_STATUS_OPACITY
 
 
 def default_profile_config() -> dict[str, Any]:
@@ -112,6 +120,7 @@ def default_profile_config() -> dict[str, Any]:
         "top": False,
         "run_status_tip": True,
         "run_status_pos": "右上角",
+        "run_status_opacity": DEFAULT_RUN_STATUS_OPACITY,
         "click_indicator": True,
         "mouse_trail": False,
         "start_step": "1",
@@ -202,6 +211,12 @@ def migrate_profile_config(config: Mapping[str, Any]) -> MigrationResult:
         if key not in migrated:
             migrated[key] = copy.deepcopy(value)
             changed = True
+
+    raw_opacity = migrated["run_status_opacity"]
+    opacity = normalize_run_status_opacity(raw_opacity)
+    if type(raw_opacity) is not int or raw_opacity != opacity:
+        migrated["run_status_opacity"] = opacity
+        changed = True
 
     normalized_log_mode = normalize_log_mode(
         migrated.get("log_mode"), migrated.get("log_level", 0)

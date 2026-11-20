@@ -301,5 +301,54 @@ class BulkTaskSettingsUiTests(QtCallbackGuardMixin, unittest.TestCase):
                     self.assertNotIn(key, step, f"{key} 应被批量清空移除")
 
 
+    def test_batch_runtime_lock_blocks_writeback_while_a_run_starts(self):
+        """UI-20261027-01：对话框先开、运行后起时批量写回必须被屏蔽，解锁后恢复。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = self.create_window(temp_dir)
+            window.add_row(
+                {"type": 1.0, "value": "10,20"},
+                record_undo=False,
+                select=False,
+            )
+            window.task_list.select_item_with_modifiers(
+                window.task_list.item(0), Qt.NoModifier
+            )
+            before = window.snapshot_tasks()
+
+            def edit_then_start_run(dialog):
+                dialog.coord_step_chk.setChecked(True)
+                # 真实入口：热键/计划任务在对话框保持打开期间启动运行
+                window.execution_controller.set_runtime_editing_locked(True)
+                return QDialog.Accepted
+
+            with mock.patch.object(TaskConfigDialog, "exec", edit_then_start_run):
+                self.assertFalse(
+                    window.workflow_editor.open_batch_task_settings(),
+                    "运行已开始后，批量对话框的 Accepted 写回必须被屏蔽",
+                )
+            self.assertEqual(
+                window.snapshot_tasks(),
+                before,
+                "屏蔽写回时步骤数据必须逐字未变",
+            )
+            self.assertFalse(
+                window.snapshot_tasks()[0].get("coord_step_en"),
+                "前提：同样的编辑在未锁定时的确会写入 coord_step_en",
+            )
+
+            window.execution_controller.set_runtime_editing_locked(False)
+
+            def edit_dialog(dialog):
+                dialog.coord_step_chk.setChecked(True)
+                return QDialog.Accepted
+
+            with mock.patch.object(TaskConfigDialog, "exec", edit_dialog):
+                self.assertTrue(
+                    window.workflow_editor.open_batch_task_settings(),
+                    "停止后同一入口必须恢复批量应用",
+                )
+            self.assertTrue(window.snapshot_tasks()[0]["coord_step_en"])
+
+
 if __name__ == "__main__":
     unittest.main()

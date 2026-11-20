@@ -14,11 +14,19 @@ SCENE_WAKE_SENSITIVITIES = ("conservative", "balanced", "sensitive")
 
 @dataclass(frozen=True)
 class SceneSignature:
-    """Compact grayscale fingerprint of a recognition region."""
+    """Compact grayscale fingerprint of a recognition region.
+
+    ``source`` records which producer built the fingerprint. The native path
+    resizes with ``int(round(w * scale))`` and the PIL fallback uses
+    ``Image.thumbnail``; the two disagree on the resulting size for many common
+    regions, and a size mismatch used to be read as a 100% change (a false
+    wake on every backend switch). See VS-20261027-05.
+    """
 
     width: int
     height: int
     pixels: bytes
+    source: str = "pil"
 
 
 @dataclass(frozen=True)
@@ -53,7 +61,11 @@ def normalize_sensitivity(value: object) -> str:
 
 
 def make_scene_signature(
-    image: Image.Image | None, *, max_width: int = 160, max_height: int = 96
+    image: Image.Image | None,
+    *,
+    max_width: int = 160,
+    max_height: int = 96,
+    source: str = "pil",
 ) -> SceneSignature | None:
     """Create a small grayscale fingerprint without importing NumPy/OpenCV.
 
@@ -65,6 +77,7 @@ def make_scene_signature(
         image: Source frame, or None to skip fingerprinting.
         max_width: Maximum fingerprint width in pixels (clamped to >= 8).
         max_height: Maximum fingerprint height in pixels (clamped to >= 8).
+        source: Producer label stored with the fingerprint (``"pil"`` here).
 
     Returns:
         A downscaled grayscale :class:`SceneSignature`, or None when the input
@@ -79,7 +92,26 @@ def make_scene_signature(
     )
     if work.width <= 0 or work.height <= 0:
         return None
-    return SceneSignature(work.width, work.height, work.tobytes())
+    return SceneSignature(work.width, work.height, work.tobytes(), source)
+
+
+def scene_signature_source(signatures) -> str:
+    """Return the single producer backend shared by a fingerprint set.
+
+    Args:
+        signatures: Iterable of :class:`SceneSignature` for the tracked regions.
+
+    Returns:
+        The backend name, or ``""`` when the set is empty or mixes producers.
+    """
+    sources = {
+        str(getattr(item, "source", "") or "")
+        for item in (signatures or ())
+        if item is not None
+    }
+    if len(sources) != 1:
+        return ""
+    return next(iter(sources))
 
 
 def compare_scene_signatures(
@@ -104,6 +136,11 @@ def compare_scene_signatures(
         peak/top/global change percentages.
     """
     if before is None or after is None:
+        return SceneChange(False, 0.0, 0.0, 0.0)
+    # VS-20261027-05: 原生按 int(round(w*scale)) 缩放、PIL 回退用 thumbnail，两者对
+    # 同一区域常常给出不同尺寸。尺寸分歧必须读成"不可比较"而不是 100% 变化，否则每次
+    # 原生/PIL 切换都会产生一次伪唤醒，提前结束自适应等待并触发一次真实识别。
+    if before.source != after.source:
         return SceneChange(False, 0.0, 0.0, 0.0)
     if before.width != after.width or before.height != after.height:
         return SceneChange(True, 100.0, 100.0, 100.0)

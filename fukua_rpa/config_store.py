@@ -1087,6 +1087,8 @@ def persist_profiles(
     profiles, _changed = migrate_profiles(profiles)
     # 映射全局化：以当前方案为权威（UI 刚写入的就是它），先在校验范围内覆盖所有方案，
     # **校验通过后**才写共享键——被拒绝的保存不得改变任何持久状态（FR-20261021-003）。
+    # 覆盖的是 migrate_profiles 的深拷贝，因此抛错时调用方的内存方案也不受影响；
+    # 共享键的实际写入点在下面所有可失败步骤之后（CF-20261027-01）。
     shared_mapping_payload: dict[str, Any] = {}
     if isinstance(profiles, dict):
         source = profiles.get(current_profile)
@@ -1101,10 +1103,6 @@ def persist_profiles(
         raise ValueError(error)
     if current_profile not in profiles:
         raise ValueError(f"当前方案不存在：{current_profile}")
-    if shared_mapping_payload:
-        settings.setValue(
-            GLOBAL_MAPPING_KEY, json.dumps(shared_mapping_payload, ensure_ascii=False)
-        )
     payload_text, signature = profiles_signature(profiles, current_profile)
     try:
         main_record, main_error = _load_settings_record(settings)
@@ -1139,6 +1137,14 @@ def persist_profiles(
             profiles_backup_payload(profiles, current_profile, generation),
         )
         prune_profile_backups(backup_path, backup_count)
+    # CF-20261027-01：共享全局键必须等所有可失败步骤（版本读取、备份归档、原子写、
+    # 裁剪）都过去之后才写——它是本次保存的**第一次落盘**。否则磁盘满/备份损坏这类
+    # OSError 会留下「全局键已改、profiles 未改」的半次保存，违反上面 FR-20261021-003
+    # 自述的「被拒绝的保存不得改变任何持久状态」。
+    if shared_mapping_payload:
+        settings.setValue(
+            GLOBAL_MAPPING_KEY, json.dumps(shared_mapping_payload, ensure_ascii=False)
+        )
     settings.setValue("profiles_json", payload_text)
     settings.setValue("current_profile", current_profile)
     settings.setValue("profiles_signature", signature)

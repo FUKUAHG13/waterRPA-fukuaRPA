@@ -778,6 +778,41 @@ class InputBackendCompatibilityTests(unittest.TestCase):
                 result[0], expected, f"{name} 必须映射到 0x{expected:02X}"
             )
 
+    def test_mouse_button_names_are_consistent_across_backends(self):
+        """未知鼠标按钮不得被 SendInput 静默改成左键（TI-20261027-01）。
+
+        默认 PyAutoGUI 后端对同样的名称抛错，此前 SendInput 却回退为左键：同一份
+        录制/步骤在两种后端下注入不同按钮，用户只会看到"换了后端就点错"。白名单
+        由 constants.MOUSE_BUTTON_NAMES 单点定义，时序校验与两处后端共用它。
+        """
+        import pyautogui
+
+        from fukua_rpa.constants import MOUSE_BUTTON_NAMES
+        from fukua_rpa.input_backend import (
+            _MOUSE_BUTTON_FLAGS,
+            InputInjectionError,
+            create_input_backend,
+        )
+
+        # 后端按钮表必须与共享白名单逐项一致：多一个名字，校验会放行 SendInput
+        # 无法注入的按钮；少一个名字，可回放的录制数据会被校验误拒。
+        self.assertEqual(set(_MOUSE_BUTTON_FLAGS), set(MOUSE_BUTTON_NAMES))
+        backend = create_input_backend("SendInput")
+        for name in MOUSE_BUTTON_NAMES:
+            self.assertEqual(pyautogui._normalizeButton(name), name)
+            with mock.patch.object(backend, "_send", return_value=True) as send:
+                backend.mouse_down(button=name)
+                backend.mouse_up(button=name)
+            self.assertEqual(send.call_count, 2, f"{name} 必须按、抬各注入一次")
+
+        for bad in ("xbutton1", "wheel", "Left Right", "", None):
+            with mock.patch.object(backend, "_send", return_value=True) as send:
+                with self.assertRaises(InputInjectionError):
+                    backend.mouse_down(button=bad)
+                with self.assertRaises(InputInjectionError):
+                    backend.mouse_up(button=bad)
+            self.assertEqual(send.call_count, 0, f"{bad!r} 不得注入任何事件")
+
     def test_win_keys_carry_extended_flag(self):
         """LWin/RWin 物理扫描码带 E0 前缀，扫描码模式必须加扩展位
         （FR-RISK-20261010-2102），与方向键同理。"""

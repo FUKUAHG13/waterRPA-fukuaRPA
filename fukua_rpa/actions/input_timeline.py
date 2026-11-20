@@ -11,6 +11,7 @@ import logging
 import time
 
 from fukua_rpa.constants import (
+    MAX_TIMELINE_COORDINATE,
     MAX_TIMELINE_EVENT_SECONDS,
     MAX_TIMELINE_EVENTS,
     TASK_TYPE_INPUT_TIMELINE,
@@ -23,8 +24,6 @@ logger = logging.getLogger(__name__)
 
 _KEY_ACTIONS = frozenset({"down", "up", "repeat"})
 _MOUSE_ACTIONS = frozenset({"down", "up"})
-# 坐标绝对上限：物理桌面坐标远小于此值，超出说明数据损坏而非用户意图。
-_MAX_COORDINATE = 100_000
 
 
 def _point(item):
@@ -34,7 +33,7 @@ def _point(item):
         y = int(item.get("y"))
     except (TypeError, ValueError):
         return None
-    if abs(x) > _MAX_COORDINATE or abs(y) > _MAX_COORDINATE:
+    if abs(x) > MAX_TIMELINE_COORDINATE or abs(y) > MAX_TIMELINE_COORDINATE:
         return None
     return x, y
 

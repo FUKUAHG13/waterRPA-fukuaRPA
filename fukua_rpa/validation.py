@@ -19,8 +19,10 @@ from .constants import (
     MAX_MULTI_IMAGE_ACTION_RULES,
     MAX_SINGLE_TEMPLATE_CACHE_BYTES,
     MAX_TEMPLATE_CACHE_BYTES,
+    MAX_TIMELINE_COORDINATE,
     MAX_TIMELINE_EVENT_SECONDS,
     MAX_TIMELINE_EVENTS,
+    MOUSE_BUTTON_NAMES,
     SCALE_MAX,
     SCALE_MIN,
     TASK_TYPE_ACTIVATE_WINDOW,
@@ -126,8 +128,6 @@ def _region_outside(outer_text: str, inner_text: str) -> bool:
     return ix < 0 or iy < 0 or ix + iw > outer_w or iy + ih > outer_h
 
 
-_TIMELINE_MAX_COORDINATE = 100_000
-
 
 def _valid_point(item: Mapping[str, Any]) -> bool:
     """Return True when x/y are integers inside the supported coordinate range."""
@@ -136,7 +136,7 @@ def _valid_point(item: Mapping[str, Any]) -> bool:
         y = int(item.get("y"))
     except (TypeError, ValueError):
         return False
-    return abs(x) <= _TIMELINE_MAX_COORDINATE and abs(y) <= _TIMELINE_MAX_COORDINATE
+    return abs(x) <= MAX_TIMELINE_COORDINATE and abs(y) <= MAX_TIMELINE_COORDINATE
 
 
 class TaskListValidator:
@@ -729,6 +729,15 @@ class TaskListValidator:
                 button = str(item.get("button", "")).strip().lower()
                 if action not in ("down", "up") or not button:
                     return f"第 {step_no} 步输入时序第 {index} 个鼠标事件缺少按钮或动作无效。"
+                if button not in MOUSE_BUTTON_NAMES:
+                    # INVARIANT: 白名单必须与输入后端一致（TI-20261027-01）。放行未知
+                    # 按钮时 PyAutoGUI 后端会抛错、SendInput 后端按左键，同一份录制
+                    # 数据在两种模式下结果不同，用户只会看到「换了后端就失效」。
+                    return (
+                        f"第 {step_no} 步输入时序第 {index} 个鼠标事件的按钮"
+                        f"「{button}」不受支持，只支持 "
+                        f"{'、'.join(MOUSE_BUTTON_NAMES)}，请重新录制。"
+                    )
                 if not _valid_point(item):
                     return f"第 {step_no} 步输入时序第 {index} 个鼠标事件坐标无效。"
                 if action == "down":

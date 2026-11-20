@@ -99,6 +99,10 @@ SUITES = {
         # ("ui",)，故登记在本组。
         "tests.test_bulk_visibility_scope",
         "tests.test_auto_clicker_behavior",
+        # FR-20261117-001：连点器裸单键热键（录入/加载/绑定/注册四处生效）回归。
+        # 被测源 fukua_rpa/ui/auto_clicker_mixins/hotkey.py、ui/controllers/hotkey_controller.py
+        # 经 plan_impacted_tests 实测只命中 ("ui",)，此前未登记导致门禁恒红且定向漏测。
+        "tests.test_auto_clicker_bare_hotkey",
         # FR-20261011-007：test_auto_clicker_stop 的守护源（连点器窗口、独立工具
         # 线程、热键控制器、输入所有权）全部位于 fukua_rpa/ui/**，此前只登记在
         # smoke，改动这些源文件时定向门禁不会运行它。

@@ -193,6 +193,67 @@ class UiEntryTests(QtCallbackGuardMixin, unittest.TestCase):
         finally:
             self.app.setProperty("_fukua_ui_scale", previous)
 
+    def test_running_status_overlay_fades_border_background_and_text(self):
+        from fukua_rpa.ui.overlays import RunningStatusOverlay
+
+        overlay = RunningStatusOverlay()
+        self.addCleanup(dispose_widget, self.app, overlay)
+        with mock.patch("fukua_rpa.ui.overlays.exclude_window_from_capture") as exclude:
+            overlay.start_overlay("右上角")
+            self.app.processEvents()
+            full = overlay.grab().toImage()
+            middle = full.height() // 2
+            text_pixel = next(
+                (x, y)
+                for y in range(full.height())
+                for x in range(4, full.width() - 4)
+                if min(full.pixelColor(x, y).getRgb()[:3]) > 240
+            )
+            sample_pixels = ((1, middle), (5, middle), text_pixel)
+            overlay.start_overlay("右下角", opacity_percent=50)
+            self.app.processEvents()
+            faded = overlay.grab().toImage()
+            for x, y in sample_pixels:
+                with self.subTest(pixel=(x, y)):
+                    self.assertGreater(full.pixelColor(x, y).alpha(), 0)
+                    self.assertAlmostEqual(
+                        faded.pixelColor(x, y).alpha(),
+                        full.pixelColor(x, y).alpha() / 2,
+                        delta=1,
+                    )
+            self.assertEqual(overlay.position_name, "右下角")
+            self.assertTrue(overlay.windowFlags() & Qt.WindowTransparentForInput)
+            self.assertTrue(overlay.testAttribute(Qt.WA_TransparentForMouseEvents))
+            self.assertTrue(overlay.testAttribute(Qt.WA_ShowWithoutActivating))
+            self.assertGreaterEqual(exclude.call_count, 2)
+
+            overlay.start_overlay("右上角", opacity_percent=1)
+            self.app.processEvents()
+            self.assertGreater(overlay.grab().toImage().pixelColor(*text_pixel).alpha(), 0)
+            overlay.start_overlay("右上角", opacity_percent=100)
+            self.app.processEvents()
+            self.assertEqual(overlay.grab().toImage(), full)
+
+    def test_running_status_uses_target_run_snapshot_and_zero_stops_overlay(self):
+        window = create_test_window(self, ensure_dialog=False)
+        controller = window.execution_controller
+        feedback = window.feedback_controller
+        cfg = dict(default_profile_config(), run_status_opacity=0)
+        controller._enter_running_ui_state(cfg, source="scheduled")
+        self.assertIsNone(feedback.running_overlay)
+
+        cfg.update(run_status_pos="右下角", run_status_opacity=24)
+        controller._enter_running_ui_state(cfg, source="scheduled")
+        overlay = feedback.running_overlay
+        self.assertEqual(overlay.position_name, "右下角")
+        self.assertTrue(overlay.isVisible())
+        self.assertAlmostEqual(overlay.bg.graphicsEffect().opacity(), 0.24)
+
+        cfg["run_status_opacity"] = 0
+        controller._enter_running_ui_state(cfg, source="scheduled")
+        self.assertFalse(overlay.isVisible())
+        self.assertFalse(overlay.timer.isActive())
+
     def test_mouse_trail_overlay_is_click_through(self):
         from fukua_rpa.ui.overlays import MouseTrailOverlay
 

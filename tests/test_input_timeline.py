@@ -440,6 +440,43 @@ class TimelinePlaybackTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertIn("鼠标按钮", error)
 
+    def test_validation_rejects_unknown_mouse_button(self):
+        """未知按钮必须在校验层拒绝（TI-20261027-01）：放行后回放时 PyAutoGUI 后端
+        抛错、SendInput 后端按左键，同一份录制在两种模式下结果不同。"""
+        task = _timeline_task(
+            [
+                {"t": 0.0, "kind": "mouse", "button": "xbutton1", "action": "down",
+                 "x": 1, "y": 1},
+                {"t": 0.1, "kind": "mouse", "button": "xbutton1", "action": "up",
+                 "x": 1, "y": 1},
+            ]
+        )
+        error = TaskListValidator(
+            {"scale_min": "0.8", "scale_max": "1.2", "scale_step": "0.05"}
+        ).validate([task])
+        self.assertIsNotNone(error)
+        self.assertIn("xbutton1", error)
+        self.assertIn("不受支持", error)
+
+    def test_validation_accepts_the_three_supported_mouse_buttons(self):
+        """白名单必须与输入后端一致：left/middle/right 的按下—抬起对都要放行。"""
+        from fukua_rpa.constants import MOUSE_BUTTON_NAMES
+
+        for name in MOUSE_BUTTON_NAMES:
+            with self.subTest(button=name):
+                task = _timeline_task(
+                    [
+                        {"t": 0.0, "kind": "mouse", "button": name,
+                         "action": "down", "x": 1, "y": 1},
+                        {"t": 0.1, "kind": "mouse", "button": name,
+                         "action": "up", "x": 1, "y": 1},
+                    ]
+                )
+                error = TaskListValidator(
+                    {"scale_min": "0.8", "scale_max": "1.2", "scale_step": "0.05"}
+                ).validate([task])
+                self.assertIsNone(error, error)
+
     def test_validation_rejects_invalid_mouse_point(self):
         task = _timeline_task(
             [

@@ -15,6 +15,7 @@ from unittest import mock
 
 from PySide6.QtWidgets import QApplication
 
+from fukua_rpa.config_store import load_profiles_backup
 from tests.qt_test_support import create_test_window
 
 
@@ -79,6 +80,68 @@ class TwoPhaseSettingsTests(unittest.TestCase):
         self.assertEqual(window.playback_speed.text(), "1.5")
         self.assertEqual(window.get_current_ui_config().get("conf"), "0.5")
 
+    def test_running_status_opacity_round_trips_settings_and_autosave(self):
+        window = self._window()
+        name = window.current_profile_name
+        profile = window.profiles_data[name]
+        profile.update(run_status_pos="右下角", run_status_opacity=37)
+        self.assertIsNone(getattr(window, "settings_dialog", None))
+        self.assertEqual(window.get_current_ui_config()["run_status_opacity"], 37)
+
+        self.assertIsNotNone(window._ensure_settings_dialog())
+        spin = window.run_status_opacity_spin
+        self.assertEqual((spin.minimum(), spin.maximum(), spin.value()), (0, 100, 37))
+        self.assertEqual(spin.text(), "37%")
+        self.assertEqual(window.run_status_pos_combo.currentText(), "右下角")
+        window.profile_controller.mark_clean()
+        spin.setValue(0)
+        self.assertTrue(window.profile_controller.has_unsaved_changes())
+        window.autosave_profiles_if_changed()
+
+        profiles, current, error = load_profiles_backup(window.profile_backup_path)
+        self.assertEqual(error, "")
+        self.assertEqual(current, name)
+        self.assertEqual(profiles[name]["run_status_opacity"], 0)
+        self.assertTrue(window.apply_ui_config(dict(profile, run_status_opacity=100)))
+        self.assertEqual(spin.value(), 100)
+        self.assertTrue(window.apply_ui_config(profiles[name]))
+        self.assertEqual(spin.text(), "0%")
+
+    def test_first_open_keeps_unsaved_host_owned_settings(self):
+        """UI-20261027-02：首开重放的已保存快照不得覆盖尚未落盘的宿主态改动。
+
+        `profiles_data[当前方案]` 只在 3 秒自动保存里刷新，所以首开前它仍是旧快照；
+        全量应用器包含宿主态语句，会把界面上刚改的值清回旧快照。修复后宿主态保持
+        界面当前值，而对话框自有控件仍显示已保存的方案值（FR-20261022-201 的相邻边界）。
+        """
+        window = self._window()
+        name = window.current_profile_name
+        saved = dict(window.profiles_data.get(name) or {})
+        saved.update({"mini": False, "loop_val": "10", "conf": "0.5"})
+        window.profiles_data[name] = saved
+
+        window.mini_chk.setChecked(True)
+        window.loop_val_edit.setText("777")
+        self.app.processEvents()
+        self.assertTrue(window.mini_chk.isChecked())
+        self.assertEqual(window.loop_val_edit.text(), "777")
+        self.assertFalse(window.profiles_data[name]["mini"], "前提：尚未自动保存")
+
+        window.show_settings_dialog()
+        self.app.processEvents()
+
+        self.assertTrue(
+            window.mini_chk.isChecked(), "首开设置不得清掉未落盘的迷你窗口开关"
+        )
+        self.assertEqual(
+            window.loop_val_edit.text(), "777", "首开设置不得回退未落盘的循环次数"
+        )
+        self.assertEqual(
+            window.conf_edit.text(),
+            "0.5",
+            "对话框自有控件仍必须显示已保存的方案值",
+        )
+
     def test_advanced_mode_not_downgraded_before_dialog(self):
         window = self._window()
         window.settings.setValue("settings_view_mode", "advanced")
@@ -120,6 +183,30 @@ class TwoPhaseSettingsTests(unittest.TestCase):
         self.assertFalse(getattr(window, "_settings_dialog_ready", False))
 
         dialog = window._ensure_settings_dialog()
+        self.assertIsNotNone(dialog)
+        self.assertTrue(getattr(window, "_settings_dialog_ready", False))
+
+    def test_midway_build_failure_clears_partial_and_recovers(self):
+        """V-6 / UI-20261027-02：settings_dialog 赋值后、构建中途失败不得留半成品阻塞重试。
+
+        FR-20261117-003：整体 build 的 mock 用例（上方）不会执行函数体赋值，覆盖不到
+        “先赋值、后失败”子路径。这里 patch 内部 section 构建（位于赋值之后），复现真实死局。
+        """
+        window = self._window()
+        from fukua_rpa.ui import settings_view
+
+        def boom(*a, **kw):
+            raise RuntimeError("midway build failure after assignment")
+
+        with (
+            mock.patch.object(settings_view, "build_recognition_sections", side_effect=boom),
+            self.assertRaises(RuntimeError),
+        ):
+            window._ensure_settings_dialog()
+        self.assertIsNone(getattr(window, "settings_dialog", None))
+        self.assertFalse(getattr(window, "_settings_dialog_ready", False))
+
+        dialog = window._ensure_settings_dialog()  # 撤销 patch 后重试
         self.assertIsNotNone(dialog)
         self.assertTrue(getattr(window, "_settings_dialog_ready", False))
 

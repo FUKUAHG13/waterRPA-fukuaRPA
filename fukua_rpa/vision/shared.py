@@ -95,6 +95,33 @@ def match_input_dimensions(
     )
 
 
+def point_in_regions(x, y, regions) -> bool:
+    """Return whether an input-space point falls inside one of the regions.
+
+    VS-20261027-02: 这是"命中点必须落在本次生效区域内"的唯一实现——原生识别返回前
+    （VisionMatchMixin.native_find_targets）和图片点击的实际落点（actions.mouse）都
+    走这里，各自再写一遍包含判断就会再次出现"某条路径忘了过滤"。空区域列表表示本次
+    没有限定范围（整桌面搜索），此时任何点都算在范围内。
+
+    Args:
+        x: Point X in input (virtualized) coordinates.
+        y: Point Y in input (virtualized) coordinates.
+        regions: Iterable of ``(x, y, width, height)`` input-space rectangles,
+            already normalized (positive width and height).
+
+    Returns:
+        ``True`` when no region limits the search or the point lies inside at
+        least one region.
+    """
+    if not regions:
+        return True
+    px, py = float(x), float(y)
+    return any(
+        rx <= px < rx + rw and ry <= py < ry + rh
+        for rx, ry, rw, rh in regions
+    )
+
+
 class VisionSharedMixin:
     """Screenshot capture, region geometry, scale-memory and key helpers shared across the vision mixins. Also hosts the module-level tuning constants and the optional mss availability flag."""
     def create_mss_instance(self):

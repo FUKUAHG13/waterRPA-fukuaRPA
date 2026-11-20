@@ -623,6 +623,27 @@ class AutoClickerToolWindow(ClickerOptionsMixin, HotkeyMixin, RunnerLifecycleMix
             self._hotkeys_active = True
             self._register_shortcuts()
 
+    def _stop_and_wait(self) -> bool:
+        thread = self._thread
+        if thread is None or not thread.isRunning():
+            return True
+        self.request_stop()
+        return thread.wait(2000)
+
+    def stop_for_shutdown(self) -> bool:
+        """Keep the application alive if this tool's worker has not stopped."""
+        if self._stop_and_wait():
+            return True
+        logger.warning("退出程序前连点器工作线程未在 2 秒内结束")
+        # 工作线程可能仍持有输入锁。此次退出已经取消，只有能立即取锁才尝试释放，
+        # 避免在主线程等待同一工作线程，也不排队释放后续运行的输入。
+        try:
+            if not self.engine.release_injected_inputs(wait_for_lock=False):
+                logger.warning("连点器输入锁仍被占用，本次跳过退出前的输入释放")
+        except Exception:  # noqa: BLE001 - 清理失败仍须拒绝退出
+            logger.warning("退出程序前释放连点器输入失败")
+        return False
+
     def closeEvent(self, event):
         self._hotkeys_active = False
         host = self._host_ref()
@@ -638,17 +659,10 @@ class AutoClickerToolWindow(ClickerOptionsMixin, HotkeyMixin, RunnerLifecycleMix
             with contextlib.suppress(RuntimeError):
                 picker.close()
             self._fixed_point_picker = None
-        thread = self._thread
-        if thread is not None and thread.isRunning():
-            self.request_stop()
-            if not thread.wait(2000):
-                logger.warning("连点器工具窗口关闭时工作线程未在 2 秒内结束")
-                # SAFETY: 设计基准"独立输入工具"——关闭工具窗口必须发出停止并有界
-                # 等待，**超时应记录并继续执行统一输入释放**，不能让鼠标键或键盘键
-                # 保持按下（ARCHITECTURE #87，审查 FR-005）。线程卡在中间状态
-                # （长按保持中）时逐次 try/finally 尚未执行，此处是唯一兜底。
-                # release 幂等，且只释放本引擎注入的输入（tracked 集合），
-                # 与残存 worker 并发安全。
-                with contextlib.suppress(Exception):
-                    self.engine.release_injected_inputs()
+        if not self._stop_and_wait():
+            logger.warning("连点器工具窗口关闭时工作线程未在 2 秒内结束")
+            # SAFETY: 独立工具窗口仍会隐藏，超时后尽力释放本引擎记录的
+            # 输入（ARCHITECTURE #87）；保留线程引用，等待原生 finished。
+            with contextlib.suppress(Exception):
+                self.engine.release_injected_inputs()
         super().closeEvent(event)

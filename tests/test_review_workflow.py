@@ -199,6 +199,78 @@ class ReviewWorkflowTests(ReviewFixture, unittest.TestCase):
         with self.assertRaisesRegex(InvalidRecord, "路由|回交"):
             check_report(self.report, self.ledger)
 
+    def pending_closeout_record(self):
+        meta = {**self.meta, "workflow_status": "implementation_waiting_for_verification",
+                "next_action": "delivery_closeout", "executing_role": "A",
+                "executing_task": "implementation-task-001", "entry_mode": "same_role_continuation",
+                "implementation_status": "implemented_pending_verification", "required_gate_status": "blocked"}
+        del meta["repair_verification_status"]
+        return meta
+
+    def blocked_closeout_record(self):
+        meta = {**self.pending_closeout_record(), "workflow_status": "delivery_blocked", "next_action": "stop",
+                "delivery_status": "blocked", "unmet_required_gate_ids": ["GATE-CURRENT-001"],
+                "stop_reason": "本阶段必需的隔离环境不可用，未宣告复验通过。",
+                "resume_condition": "环境就绪后由原 A 补证，再交原 B 定向核实。"}
+        self.ledger.write_text("| `RM-20261012-368` | 未执行 |\n| `GATE-CURRENT-001` | 受阻 |\n", encoding="utf-8")
+        return meta
+
+    def test_a_pending_closeout_is_valid_in_both_cli_forms(self):
+        self.write_report(self.pending_closeout_record())
+        self.assertEqual(check_report(self.report, self.ledger)["delivery_status"], "pending")
+        script = Path(__file__).resolve().parents[1] / "scripts/check_review_workflow.py"
+        for args in ([str(self.report), "--ledger", str(self.ledger)],
+                     ["--ledger", str(self.ledger), str(self.report)]):
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, "-B", "-X", "utf8", str(script), "report", *args],
+                                        capture_output=True, text=True, encoding="utf-8", timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIn("机械校验通过", result.stdout)
+
+    def test_pending_closeout_cannot_become_passed_complete_or_b_owned(self):
+        base = self.pending_closeout_record()
+        for extra in ({"executing_role": "B"}, {"executing_role": "C"},
+                      {"delivery_status": "complete"}, {"delivery_status": "blocked"},
+                      {"delivery_status": None}, {"next_action": "stop"},
+                      {"repair_verification_status": "passed"}):
+            with self.subTest(extra=extra):
+                self.write_report({**base, **extra})
+                with self.assertRaises(InvalidRecord):
+                    check_report(self.report, self.ledger)
+
+    def test_blocked_stop_preserves_current_gate_and_supports_either_id_bucket(self):
+        base = self.blocked_closeout_record()
+        for ids in ({"unmet_required_gate_ids": ["GATE-CURRENT-001"], "blocked_ids": []},
+                    {"unmet_required_gate_ids": [], "blocked_ids": ["GATE-CURRENT-001"]}):
+            with self.subTest(ids=ids):
+                self.write_report({**base, **ids})
+                meta = check_report(self.report, self.ledger)
+                self.assertEqual(meta["required_gate_status"], "blocked")
+                self.assertEqual(meta["delivery_status"], "blocked")
+                self.assertNotIn("repair_verification_status", meta)
+
+    def test_blocked_stop_requires_a_truthful_status_reason_and_resume_condition(self):
+        base = self.blocked_closeout_record()
+        invalid = [{"executing_role": "B"}, {"delivery_status": "complete"},
+                   {"required_gate_status": "passed"}, {"required_gate_status": "not_evaluated"},
+                   {"unmet_required_gate_ids": [], "blocked_ids": []}, {"release_readiness": "ready"}]
+        invalid += [{field: value} for field in ("stop_reason", "resume_condition") for value in (None, "", "  ")]
+        for extra in invalid:
+            with self.subTest(extra=extra):
+                self.write_report({**base, **extra})
+                with self.assertRaises(InvalidRecord):
+                    check_report(self.report, self.ledger)
+
+    def test_blocked_stop_ids_need_actual_ledger_registration(self):
+        meta = self.blocked_closeout_record()
+        self.write_report(meta)
+        with self.assertRaises(InvalidRecord):
+            check_report(self.report)
+        self.ledger.write_text("| `RM-20261012-368` | 未执行 |\n正文提到 GATE-CURRENT-001。\n", encoding="utf-8")
+        with self.assertRaisesRegex(InvalidRecord, "漏登"):
+            check_report(self.report, self.ledger)
+
     def test_invalid_report_enum_and_duplicate_yaml_are_rejected(self):
         self.meta["verification_status"] = "working"
         self.write_report()
@@ -423,6 +495,44 @@ class RawBackupTests(ReviewFixture, unittest.TestCase):
         record["remote_retrieved_commit"] = record["backup_commit"]
         (self.root / "backup.json").write_text(json.dumps(record), encoding="utf-8")
         with self.assertRaisesRegex(InvalidRecord, "源码树"):
+            check_delivery(delivery, self.repo, self.ledger)
+
+    def test_complete_delivery_checks_a_current_gates_and_all_failure_buckets(self):
+        delivery, base = self.legacy_delivery()
+        invalid = [{"required_gate_status": value} for value in (None, "blocked", "not_evaluated")]
+        invalid += [{field: ["GATE-CURRENT-001"]} for field in
+                    ("unmet_required_gate_ids", "blocking_rework_ids", "changes_required_ids",
+                     "new_regression_ids", "blocked_ids", "unresolved_dispute_ids")]
+        for extra in invalid:
+            with self.subTest(extra=extra):
+                self.write_report({**base, **extra}, delivery)
+                with self.assertRaises(InvalidRecord):
+                    check_delivery(delivery, self.repo, self.ledger)
+
+    def test_release_only_blocker_can_remain_open_after_same_tree_delivery(self):
+        delivery, meta = self.legacy_delivery()
+        self.ledger.write_text("| `RM-20261012-368` | 未执行 |\n| `GATE-RELEASE-001` | 发布前必需 |\n", encoding="utf-8")
+        # 同时验证当前规则的 B 通过记录，避免只靠历史兼容路径证明三态分离。
+        self.meta.update(review_rules_revision="2026-10-15", next_action="delivery_closeout",
+                         release_readiness="blocked", pending_release_gate_ids=["GATE-RELEASE-001"])
+        self.write_report()
+        meta.update(release_readiness="blocked", pending_release_gate_ids=["GATE-RELEASE-001"])
+        self.write_report(meta, delivery)
+        self.assertEqual(check_delivery(delivery, self.repo, self.ledger), 1)
+        observed = check_report(delivery, self.ledger)
+        self.assertEqual(observed["required_gate_status"], "passed")
+        self.assertEqual(observed["release_readiness"], "blocked")
+        self.assertEqual(observed["pending_release_gate_ids"], ["GATE-RELEASE-001"])
+
+    def test_blocked_stop_never_passes_complete_delivery_validation(self):
+        delivery, meta = self.legacy_delivery()
+        meta.update(workflow_status="delivery_blocked", delivery_status="blocked",
+                    required_gate_status="blocked", unmet_required_gate_ids=["GATE-CURRENT-001"],
+                    stop_reason="原 B 的必要验证受环境阻塞。", resume_condition="环境恢复后交原 B 定向补核。")
+        self.ledger.write_text("| `RM-20261012-368` | 未执行 |\n| `GATE-CURRENT-001` | 受阻 |\n", encoding="utf-8")
+        self.write_report(meta, delivery)
+        self.assertEqual(check_report(delivery, self.ledger)["delivery_status"], "blocked")
+        with self.assertRaisesRegex(InvalidRecord, "仅校验 complete"):
             check_delivery(delivery, self.repo, self.ledger)
 
 

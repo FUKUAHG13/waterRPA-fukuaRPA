@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...config_schema import DEFAULT_RUN_STATUS_OPACITY
 from ...config_store import normalize_profile_backup_count
 from ...constants import DEFAULT_PROFILE_BACKUP_COUNT, MAX_PROFILE_BACKUP_COUNT
 from ...usage_notices import first_use_notices_enabled
@@ -141,11 +142,19 @@ def _build_display_and_indicator_controls(self, display_row, workflow_row):
         "提示位置:",
         self.run_status_pos_combo,
         HelpBtn(
-            "【运行状态提示】\n脚本运行时在屏幕角落显示“脚本正在执行中”、当前循环、当前步骤和已运行时间。"
+            "【运行状态提示】\n脚本运行时在屏幕角落显示当前循环、步骤和已运行时间。"
+            "\n调低不透明度可看清提示框后方的内容，0% 时隐藏提示。"
         ),
     )
     self.run_status_group = run_status_group
-    self.advanced_setting_widgets.append(run_status_group)
+    # UI-CONVENTION: allow fixed-geometry reason=百分数后缀和高倍率字体需要内容宽度，70px 窄列会裁切 100%。
+    self.run_status_opacity_spin = NoWheelSpinBox()
+    self.run_status_opacity_spin.setRange(0, 100)
+    self.run_status_opacity_spin.setSuffix("%")
+    self.run_status_opacity_spin.setValue(DEFAULT_RUN_STATUS_OPACITY)
+    self.run_status_opacity_spin.setAccessibleName("运行状态提示不透明度")
+    opacity_group = display_row.add_group("不透明度", self.run_status_opacity_spin)
+    self.advanced_setting_widgets.extend((run_status_group, opacity_group))
     self.click_indicator_chk = QCheckBox("点击位置提示")
     self.click_indicator_chk.setChecked(True)
     self.click_indicator_chk.setToolTip(

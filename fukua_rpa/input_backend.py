@@ -146,6 +146,21 @@ _MOUSE_BUTTON_FLAGS = {
 }
 
 
+def _mouse_button_flags(button):
+    """Resolve ``(down, up)`` flags for one mouse button name.
+
+    SAFETY (TI-20261027-01): 未知按钮必须显式失败，不能回退成左键。默认 PyAutoGUI
+    后端对同样的名称本来就抛错，静默改按左键会让两种注入模式对同一份步骤给出不同的
+    物理结果，把数据问题伪装成「切换后端就失效」。
+    """
+
+    name = str(button).lower()
+    flags = _MOUSE_BUTTON_FLAGS.get(name)
+    if flags is None:
+        raise InputInjectionError(f"未知的鼠标按钮名称：{button}")
+    return flags
+
+
 class InputInjectionError(RuntimeError):
     """Raised when an explicit input backend could not inject an event.
 
@@ -383,11 +398,11 @@ class SendInputInputBackend:
         return int(point.x), int(point.y)
 
     def mouse_down(self, *, button: str) -> None:
-        flags = _MOUSE_BUTTON_FLAGS.get(str(button), _MOUSE_BUTTON_FLAGS["left"])[0]
+        flags = _mouse_button_flags(button)[0]
         self._send(self._mouse_input(flags))
 
     def mouse_up(self, *, button: str) -> None:
-        flags = _MOUSE_BUTTON_FLAGS.get(str(button), _MOUSE_BUTTON_FLAGS["left"])[1]
+        flags = _mouse_button_flags(button)[1]
         self._send(self._mouse_input(flags))
 
     def key_down(self, key: str) -> None:

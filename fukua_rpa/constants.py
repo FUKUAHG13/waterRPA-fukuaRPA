@@ -1,7 +1,7 @@
 """Product identity, compatibility baseline, and defensive resource limits."""
 
 PRODUCT_NAME = "fukuaRPA"
-APP_VERSION = "v1.1.0"
+APP_VERSION = "v1.1.4"
 BUILD_NAME = f"{PRODUCT_NAME}_{APP_VERSION}"
 ONEFILE_BUILD_NAME = f"{BUILD_NAME}_single"
 PROJECT_REPOSITORY_URL = "https://github.com/FUKUAHG13/waterRPA-fukuaRPA"
@@ -66,6 +66,12 @@ MAX_TIMELINE_EVENTS = 50_000
 # 单个输入时序步骤允许的最大相对时间（秒）。与「等待」步骤的 86400 秒上限一致，
 # 回放侧与校验侧必须使用同一数值，否则会出现「校验通过但回放被丢弃」。
 MAX_TIMELINE_EVENT_SECONDS = 86_400.0
+# 输入时序坐标绝对上限（DESIGN）：回放侧与预运行校验侧必须共用同一数值，避免
+# 「校验放行但回放按越界丢弃」的口径分裂。物理桌面坐标远小于此值。
+MAX_TIMELINE_COORDINATE = 100_000
+# 鼠标按钮名称白名单（TI-20261027-01）：录制时序校验、输入后端和连点器共用同一
+# 集合。各处各自字面化时会出现「校验通过、某个后端却静默改按左键」的口径分裂。
+MOUSE_BUTTON_NAMES = ("left", "middle", "right")
 UNTIL_CONDITION_MODES = ["图片出现", "图片消失", "区域发生变化", "区域变成指定图片", "覆盖匹配", "区域不变"]
 UNTIL_CONDITION_LOGICS = ["全部满足", "任一满足"]
 # FR-20261003-609:「按失败处理」没有任何引擎侧实现，选了也不会执行，因此界面

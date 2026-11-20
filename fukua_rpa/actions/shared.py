@@ -469,14 +469,18 @@ class ActionsSharedMixin:
         except Exception as exc:
             logger.debug("输入状态通知回调失败: %s", exc, exc_info=True)
 
-    def release_injected_inputs(self):
+    def release_injected_inputs(self, *, wait_for_lock: bool = True) -> bool:
         """Release only inputs that this engine instance actually pressed.
+
+        Return False if the caller opted to skip a busy lock.
 
         SAFETY: never send blanket key-up events for physical user input. The
         tracked sets are also exported to the Runner guard for crash cleanup.
         """
 
-        with self._injected_input_lock:
+        if not self._injected_input_lock.acquire(blocking=wait_for_lock):
+            return False
+        try:
             keys = list(reversed(self._injected_keys))
             buttons = list(self._injected_mouse_buttons)
             for key in keys:
@@ -496,6 +500,9 @@ class ActionsSharedMixin:
                     continue
                 self._injected_mouse_buttons.discard(button)
             self._notify_injected_input_state()
+        finally:
+            self._injected_input_lock.release()
+        return True
 
     @staticmethod
     def _jitter_delay(range_seconds):

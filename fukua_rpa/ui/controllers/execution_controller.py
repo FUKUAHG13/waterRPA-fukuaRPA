@@ -578,6 +578,9 @@ class ExecutionController:
                     single_tasks,
                     single_cfg,
                     f"{self.host.current_profile_name} / 第{selected_index + 1}步",
+                    plugin_dependencies=sorted(
+                        collect_plugin_dependencies(single_tasks)
+                    ),
                 )
                 run_request.config.apply_to(self.host.engine)
                 prepared_tasks = run_request.mutable_tasks()
@@ -591,6 +594,9 @@ class ExecutionController:
                 prepared_tasks,
                 single_cfg,
                 f"单步执行：原第 {selected_index + 1} 步 {command_name}",
+                # PR-20261027-01: 与手动/计划入口一样将本次运行引用的插件登记为
+                # run-ref，否则单步运行期间插件仍可被卸载或覆盖。
+                plugin_dependencies=run_request.plugin_dependencies,
             )
         finally:
             self.start_in_progress = False
@@ -875,7 +881,10 @@ class ExecutionController:
             self.host.showMinimized()
 
         if cfg.get("run_status_tip", True):
-            self.host.show_running_status_overlay(cfg.get("run_status_pos", "右上角"))
+            self.host.show_running_status_overlay(
+                cfg.get("run_status_pos", "右上角"),
+                opacity_percent=cfg.get("run_status_opacity"),
+            )
         else:
             self.host.hide_running_status_overlay()
 

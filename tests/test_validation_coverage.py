@@ -1140,6 +1140,38 @@ class UntilOverlayAndStabilityValidationTests(unittest.TestCase):
         )
         self.assertIsNone(error)
 
+    def test_overlay_rect_is_region_relative_not_screen_absolute(self):
+        """VS-20261027-01：overlay_rect 的坐标原点是大区域左上角，不是屏幕原点。
+
+        既有覆盖匹配用例把大区域固定成 ``0,0,100,100``，绝对坐标与相对坐标恰好同值，
+        所以校验侧一直分不出两种写法。把大区域挪到 ``(200,100)`` 后，同一份物理选区的
+        屏幕绝对值 ``210,110,20,20`` 必须被判越界，相对值 ``10,10,20,20`` 必须放行——
+        UI 的"定位"按钮因此只能写相对值，否则用户框得再准也存成无效配置。
+        """
+        region = "200,100,100,100"
+        self.assertIsNone(
+            validate_task_list(
+                [
+                    self._overlay_task(
+                        until_cond1_region=region,
+                        until_cond1_overlay_rect="10,10,20,20",
+                    )
+                ],
+                _cfg(),
+            )
+        )
+        error = validate_task_list(
+            [
+                self._overlay_task(
+                    until_cond1_region=region,
+                    until_cond1_overlay_rect="210,110,20,20",
+                )
+            ],
+            _cfg(),
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("必须完全落在大区域内", error)
+
     def test_overlay_mode_scale_out_of_range_rejected(self):
         error = validate_task_list(
             [self._overlay_task(until_cond1_overlay_scale="9.0")], _cfg()

@@ -117,6 +117,10 @@ from .forwarders import (
 )
 from .input_tools import CoordinatePickerUI  # noqa: F401  (patched by tests as main_window.CoordinatePickerUI)
 from .lifecycle import schedule_widget_callback
+from .settings_binding import (
+    capture_host_owned_settings,
+    restore_host_owned_settings,
+)
 from .task_list import DraggableListWidget
 from .theme import apply_modern_theme
 
@@ -602,7 +606,18 @@ class RPAWindow(
             # O-1：`settings_view` 的导入随之延迟到首次打开。
             from .settings_view import build_global_settings_dialog
 
-            build_global_settings_dialog(self)
+            try:
+                build_global_settings_dialog(self)
+            except Exception:
+                # V-6 / UI-20261027-02：构建在 :51 赋值 settings_dialog 之后中途失败时，
+                # 半成品会残留在 gate key 上；重试因 dialog is not None 跳过构建，
+                # ready 永不置位，设置窗口永久打不开。失败时必须把 gate 清回初始态。
+                partial = getattr(self, "settings_dialog", None)
+                if partial is not None:
+                    partial.deleteLater()
+                    self.settings_dialog = None
+                self._settings_dialog_ready = False
+                raise
             dialog = self.settings_dialog
         if getattr(self, "_settings_dialog_ready", False):
             return dialog
@@ -613,6 +628,11 @@ class RPAWindow(
         # FR-20261022-201：这里只能应用“设置控件”，不得复用 apply_ui_config 的
         # 载入方案语义——后者会 close_all_task_config_dialogs() + task_list.clear()
         # 并按已保存 tasks 重建，从而丢弃首开前尚未自动保存的步骤新增/编辑。
+        # UI-20261027-02：先抓一份宿主态快照。全量应用器包含宿主态语句，而
+        # profiles_data 只在自动保存时刷新，直接用旧快照会把界面刚改、尚未落盘的
+        # 设置清零；应用后用快照恢复，宿主态保持界面当前值、对话框自有控件仍显示
+        # 已保存的方案值（更新日志 FR-20261022-201 的相邻边界）。
+        live_host_settings = capture_host_owned_settings(self)
         if not self.apply_settings_controls_config(
             self._settings_dialog_source_config()
         ):
@@ -624,6 +644,7 @@ class RPAWindow(
                 f"原因：{detail}\n\n可以稍后重试；当前步骤列表未被改动。",
             )
             return None
+        restore_host_owned_settings(self, live_host_settings)
         # 简易/高级模式在启动时因对话框缺失无法应用到对话框控件，构建后补一次。
         self.apply_settings_mode()
         if not getattr(self, "_settings_visibility_connected", False):

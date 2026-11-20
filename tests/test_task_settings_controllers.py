@@ -614,6 +614,66 @@ class TaskSettingsControllerTests(QtCallbackGuardMixin, unittest.TestCase):
             dialog.get_data()["until_cond1_sub_region"], "10,20,50,60"
         )
 
+    def test_until_condition_overlay_rect_pick_stays_relative_to_region(self):
+        """VS-20261027-01：覆盖匹配"定位"存的是相对大区域的偏移，不是屏幕绝对坐标。
+
+        校验侧 ``validation._region_outside`` 与执行侧 ``evaluate_overlay_match_condition``
+        都把 overlay_rect 当作大区域截图内的像素偏移。修复前该按钮直接把屏幕绝对坐标
+        写进字段，只有大区域原点恰为 (0,0) 时才碰巧正确——这正是既有测试全用
+        ``0,0,*,*`` 区域而漏掉它的原因。
+        """
+        dialog = self.create_dialog(
+            {"until_cond1_mode": "覆盖匹配"},
+            step_type="直到条件成立",
+        )
+        controls = dialog.until_condition_widgets[1]
+        controls["region"].setText("100,100,300,200")
+
+        dialog.until_condition_controller._on_overlay_rect_selected(
+            1, (110, 120, 50, 60)
+        )
+
+        self.assertEqual(controls["overlay_rect"].text(), "10,20,50,60")
+        self.assertEqual(
+            dialog.get_data()["until_cond1_overlay_rect"], "10,20,50,60"
+        )
+
+    def test_until_condition_overlay_rect_pick_restricts_to_big_region(self):
+        """缺大区域时不开放框选；有大区域时把框选限制在大区域内。
+
+        与 ``start_sub_region_pick`` 同口径：restrict_rect 缺失会让用户选到大区域之外，
+        保存后必然被判越界，运行期条件静默恒假。
+        """
+        dialog = self.create_dialog(
+            {"until_cond1_mode": "覆盖匹配"},
+            step_type="直到条件成立",
+        )
+        controls = dialog.until_condition_widgets[1]
+        controls["overlay_rect"].setText("7,7,7,7")
+        controller_module = "fukua_rpa.ui.task_settings_controllers.condition_controller"
+
+        with (
+            mock.patch(f"{controller_module}.region_window_manager") as manager,
+            mock.patch(f"{controller_module}.QMessageBox") as box,
+        ):
+            dialog.until_condition_controller.start_overlay_rect_pick(1)
+            self.assertFalse(manager.open.called, "没有大区域却开放了框选")
+            self.assertTrue(box.information.called)
+            self.assertEqual(controls["overlay_rect"].text(), "7,7,7,7")
+
+        controls["region"].setText("100,100,300,200")
+        with mock.patch(
+            f"{controller_module}.region_window_manager"
+        ) as manager:
+            manager.open.return_value = mock.MagicMock()
+            dialog.until_condition_controller.start_overlay_rect_pick(1)
+        self.assertTrue(manager.open.called)
+        self.assertEqual(
+            manager.open.call_args.kwargs.get("restrict_rect"),
+            (100, 100, 300, 200),
+            "覆盖匹配框选必须限制在大区域内",
+        )
+
     def test_image_region_and_debug_presets_update_original_dialog_state(self):
         dialog = self.create_dialog(
             {"debug_breakpoint": True},

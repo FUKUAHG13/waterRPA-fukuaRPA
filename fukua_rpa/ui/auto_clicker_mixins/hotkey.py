@@ -12,7 +12,6 @@ from PySide6.QtWidgets import QDialog, QLineEdit, QMessageBox
 
 from ...win32_api import (
     hotkey_signature,
-    is_safe_global_hotkey,
     parse_hotkey_text,
 )
 from ..auto_clicker_core import _START_HOTKEY_KEY, _STOP_HOTKEY_KEY
@@ -28,8 +27,11 @@ class HotkeyMixin:
             if settings is not None
             else fallback
         )
+        # 连点器启停热键允许裸单键（A、T、数字、空格等）：产品上这是用户主动
+        # 选择录入的启停键，不属于打字误触范畴；安全下限由 parse_hotkey_text
+        # 保证（拒绝 A+C 这类多普通键组合）。主程序脚本热键仍按安全策略拒绝裸键。
         parsed = parse_hotkey_text(text)
-        if parsed and is_safe_global_hotkey(parsed):
+        if parsed:
             return str(parsed["display"])
         return fallback
 
@@ -44,11 +46,12 @@ class HotkeyMixin:
                 text = dlg.captured_text if hasattr(dlg, "captured_text") else ""
             if text:
                 parsed = parse_hotkey_text(text)
-                if not parsed or not is_safe_global_hotkey(parsed):
+                if not parsed:
                     QMessageBox.warning(
                         self,
-                        "快捷键不适合全局启停",
-                        "请使用 F1-F12 等功能键，或带 Ctrl/Alt/Shift/Win 的组合键。",
+                        "快捷键格式不支持",
+                        "请使用单个按键（如 A、Enter），或带 Ctrl/Alt/Shift/Win 的组合键；"
+                        "不支持 A+C 这样多个普通键的组合。",
                     )
                     return
                 host = self._host_ref()
@@ -101,21 +104,13 @@ class HotkeyMixin:
             return {}
         start = parse_hotkey_text(self.start_key_edit.text())
         stop = parse_hotkey_text(self.stop_key_edit.text())
-        start_text = (
-            str(start["display"])
-            if start and is_safe_global_hotkey(start)
-            else ""
-        )
-        stop_text = (
-            str(stop["display"])
-            if stop and is_safe_global_hotkey(stop)
-            else ""
-        )
+        # 裸单键对连点器启停有效，故这里只要求能解析；多普通键组合由
+        # parse_hotkey_text 天然拒绝，不需要再做全局安全下限判定。
+        start_text = str(start["display"]) if start else ""
+        stop_text = str(stop["display"]) if stop else ""
         toggle = bool(
             start
             and stop
-            and is_safe_global_hotkey(start)
-            and is_safe_global_hotkey(stop)
             and hotkey_signature(start) == hotkey_signature(stop)
         )
         return {

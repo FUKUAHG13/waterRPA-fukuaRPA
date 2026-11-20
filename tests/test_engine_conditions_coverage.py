@@ -812,6 +812,41 @@ class OverlayMatchConditionTests(unittest.TestCase):
         self.assertFalse(matched)
         self.assertIn("子区域越界", detail)
 
+    def test_overlay_rect_frame_is_the_region_image_not_the_screen(self):
+        """VS-20261027-01：大区域原点非零时，屏幕绝对坐标的 overlay_rect 必然越界。
+
+        `condition_screenshot` 返回的就是大区域本身的位图，因此裁剪范围只认相对偏移。
+        断言只看坐标系判定：越界分支在进模板匹配之前就返回，与 ``patch_cv2`` 的桩
+        分数无关，不拿匹配分数当证据。
+        """
+        absolute = self._cond(
+            **{"region": "60,70,60,60", "until_overlay_rect": "70,80,20,20"}
+        )
+        with patch_cv2(), mock.patch("os.path.exists", return_value=True), mock.patch.object(
+            self.engine, "condition_screenshot",
+            return_value=(self.screenshot, 60, 70),
+        ):
+            matched, detail = self.engine.evaluate_overlay_match_condition(
+                absolute, self.step
+            )
+        self.assertFalse(matched)
+        self.assertIn("子区域越界", detail)
+
+        # 同一份物理选区减去大区域原点、换算成相对偏移 (10,10,20,20) 后不得再被判越界。
+        relative = self._cond(
+            **{"region": "60,70,60,60", "until_overlay_rect": "10,10,20,20"}
+        )
+        with patch_cv2(), mock.patch("os.path.exists", return_value=True), mock.patch.object(
+            self.engine, "condition_screenshot",
+            return_value=(self.screenshot, 60, 70),
+        ), mock.patch.object(
+            self.engine, "_get_cached_image", return_value=self.template
+        ):
+            matched, detail = self.engine.evaluate_overlay_match_condition(
+                relative, self.step
+            )
+        self.assertNotIn("子区域越界", detail)
+
     def test_template_load_failure(self):
         cond = self._cond()
         with patch_cv2(), mock.patch("os.path.exists", return_value=True), mock.patch.object(
@@ -1092,6 +1127,82 @@ class ExecuteUntilConditionsTests(unittest.TestCase):
         ):
             self.engine.execute_until_conditions(task, self.step, True)
         self.assertIsNone(self.engine._until_capture_cache)
+
+    # --- VS-20261027-04: 急停不得被聚合成"条件已满足" -----------------------
+
+    def _disappear_task(self):
+        # 原生取消码折叠成空结果后，find_condition_image 返回"未找到且非错误"，
+        # "图片消失"据此判为满足；聚合前必须再查一次停止位。
+        return {
+            "until_logic": "任一满足",
+            "until_cond1_en": True,
+            "until_cond1_mode": "图片消失",
+            "until_cond1_image": "C:/tpl.png",
+            "until_cond2_en": False,
+        }
+
+    def test_stop_arriving_during_recognition_returns_stopped(self):
+        task = self._disappear_task()
+        with mock.patch.object(
+            self.engine, "find_condition_image", return_value=(False, "识别已取消", False)
+        ), mock.patch.object(
+            self.engine, "check_stop_flag", side_effect=[False, True]
+        ) as stop, mock.patch.object(self.engine, "log") as log_mock:
+            result = self.engine.execute_until_conditions(task, self.step, True)
+        self.assertEqual(result, "stopped")
+        self.assertEqual(stop.call_count, 2)
+        logged = "；".join(str(call.args[0]) for call in log_mock.call_args_list)
+        self.assertNotIn("条件已满足", logged)
+
+    def test_all_logic_stop_after_last_condition_returns_stopped(self):
+        task = {
+            "until_logic": "全部满足",
+            "until_cond1_en": True,
+            "until_cond1_mode": "图片消失",
+            "until_cond1_image": "C:/tpl.png",
+            "until_cond2_en": True,
+            "until_cond2_mode": "图片消失",
+            "until_cond2_image": "C:/tpl.png",
+            "until_cond3_en": False,
+        }
+        with mock.patch.object(
+            self.engine, "find_condition_image", return_value=(False, "识别已取消", False)
+        ), mock.patch.object(
+            self.engine, "check_stop_flag", side_effect=[False, False, True]
+        ):
+            result = self.engine.execute_until_conditions(task, self.step, True)
+        self.assertEqual(result, "stopped")
+
+    def test_no_stop_still_aggregates_image_disappear_as_satisfied(self):
+        # 副作用配对核对：新增的聚合前复查不能把正常成立的条件判停。
+        task = self._disappear_task()
+        with mock.patch.object(
+            self.engine, "find_condition_image", return_value=(False, "图片已消失", False)
+        ), mock.patch.object(self.engine, "check_stop_flag", return_value=False):
+            result = self.engine.execute_until_conditions(task, self.step, True)
+        self.assertEqual(result, "condition_true")
+
+    def test_stop_flag_set_before_aggregation_is_read_live(self):
+        # 走真实急停入口（reserve → request_stop），不给 check_stop_flag 打桩，
+        # 证明聚合前复查读到的是当轮真实停止状态，而不是循环入口那一次的缓存值。
+        task = self._disappear_task()
+        calls = {"n": 0}
+
+        def _cancel_and_stop(*_args, **_kwargs):
+            calls["n"] += 1
+            self.engine.lifecycle.request_stop()
+            return False, "识别已取消", False
+
+        run_id = self.engine.lifecycle.reserve()
+        self.assertIsNotNone(run_id)
+        self.assertFalse(self.engine.check_stop_flag())
+        with mock.patch.object(
+            self.engine, "find_condition_image", side_effect=_cancel_and_stop
+        ):
+            result = self.engine.execute_until_conditions(task, self.step, True)
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(result, "stopped")
+        self.engine.lifecycle.finish(run_id, "stopped")
 
 
 class UntilRuntimeTests(unittest.TestCase):

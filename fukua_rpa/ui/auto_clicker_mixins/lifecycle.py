@@ -9,9 +9,13 @@
 from __future__ import annotations
 
 import contextlib
+import weakref
 
 from ...constants import TASK_TYPE_AUTO_CLICKER
 from ..auto_clicker_core import _SPEED_PRESETS, _AutoClickerRunner
+from ..settings_binding import capture_running_status_settings
+
+_CURRENT_THREAD = object()
 
 
 class RunnerLifecycleMixin:
@@ -108,8 +112,18 @@ class RunnerLifecycleMixin:
         self._thread_error_occurred = False  # FR-20260811-D13-001: 复位错误标志
         task = self._collect_task()
         self._thread = _AutoClickerRunner(self.engine, task, self._stop_event)
-        self._thread.finished.connect(self._on_thread_finished)
-        self._thread.error.connect(self._on_thread_error)
+        # INVARIANT: 生产连接必须在连接时捕获线程身份（weakref），不得改回
+        # thread.finished.connect(self._on_thread_finished) 直连。直连依赖
+        # self.sender()，而旧线程的事件送达时其 Python 包装可能已被释放，
+        # sender() 返回 None 会被误当成“直接调用”，从而清理仍在运行的新线程
+        # （FR-20261108-002）。finished 必须是 QThread 原生结束通知。
+        thread_ref = weakref.ref(self._thread)
+        self._thread.finished.connect(
+            lambda ref=thread_ref: self._on_thread_finished(ref())
+        )
+        self._thread.error.connect(
+            lambda message, ref=thread_ref: self._on_thread_error(message, ref())
+        )
         self._thread.start()
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -118,17 +132,13 @@ class RunnerLifecycleMixin:
         self._update_banner()
         self.status_label.setText("运行中...")
         host = self._host_ref()
-        status_checkbox = getattr(host, "run_status_chk", None)
-        if host is not None and (
-            status_checkbox is None or status_checkbox.isChecked()
-        ):
-            position_combo = getattr(host, "run_status_pos_combo", None)
-            position = (
-                position_combo.currentText()
-                if position_combo is not None
-                else "右上角"
+        if host is not None:
+            enabled, position, opacity = capture_running_status_settings(host)
+            if not enabled:
+                return
+            host.show_running_status_overlay(
+                position, "连点器", opacity_percent=opacity
             )
-            host.show_running_status_overlay(position, "连点器")
             host.update_running_status_overlay(
                 {
                     "cmd": f"{self.btn_type_combo.currentText()}连点",
@@ -158,13 +168,18 @@ class RunnerLifecycleMixin:
         self._on_start()
         return self._thread is not None
 
-    def _on_thread_finished(self):
-        # FR-20260809-1502: 按 sender 识别线程。旧线程的 finished 信号若在热键
-        # 启动新线程之后才被处理（竞态窗口），不得执行任何 UI 重置或清理（否则
-        # 运行中的新线程界面被置为停止态、_thread 被误删）。sender 为 None 时
-        # （直接调用/测试）按原语义处理。
-        sender = self.sender()
-        if sender is not None and sender is not self._thread:
+    def _on_thread_finished(self, thread=_CURRENT_THREAD):
+        # FR-20260809-1502 / FR-20261108-002: 按连接时捕获的线程身份识别，
+        # 不再依赖 self.sender()。旧线程的 finished 若在热键启动新线程之后才被
+        # 处理（竞态窗口），不得执行任何 UI 重置或清理；旧线程对象已被销毁时
+        # （弱引用为 None）同样只能丢弃，绝不能把当前新线程当作发送者。
+        # 无参直接调用（测试/内部）保留原语义：按当前线程处理。
+        if thread is _CURRENT_THREAD:
+            sender = self.sender()
+            thread = sender if sender is not None else self._thread
+        elif thread is None:
+            return
+        if thread is not None and thread is not self._thread:
             return
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -185,11 +200,16 @@ class RunnerLifecycleMixin:
             self._thread = None
         self._thread_error_occurred = False  # 复位供下次启动
 
-    def _on_thread_error(self, message: str):
-        # FR-20260811-D13-001: 与 _on_thread_finished 的 sender 防护对称——旧线程
-        # error 信号迟到（热键已启动新线程）时不得 set 停止事件误停新线程。
-        sender = self.sender()
-        if sender is not None and sender is not self._thread:
+    def _on_thread_error(self, message: str, thread=_CURRENT_THREAD):
+        # FR-20260811-D13-001: 与 _on_thread_finished 的身份防护对称——旧线程
+        # error 信号迟到（热键已启动新线程）或发送者已销毁时不得 set 停止事件
+        # 误停新线程。
+        if thread is _CURRENT_THREAD:
+            sender = self.sender()
+            thread = sender if sender is not None else self._thread
+        elif thread is None:
+            return
+        if thread is not None and thread is not self._thread:
             return
         self._stop_event.set()
         self._thread_error_occurred = True

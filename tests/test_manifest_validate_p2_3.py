@@ -231,11 +231,22 @@ def test_cli_validate_uses_contract():
     if not os.path.isfile(build_script):
         pytest.skip("browser-automation build script not present")
 
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         [sys.executable, build_script, "--validate"],
         cwd=BROWSER_PLUGIN_ROOT,
         capture_output=True,
         text=True,
+        # FR-20261005-007 / TS-20261027-01b：解码必须与子进程写入编码**同时**固定。
+        # `text=True` 不写 encoding 时按 locale 首选编码解码（本机 GBK），而上面的
+        # PYTHONIOENCODING 让子进程按 UTF-8 输出中文，"契约校验通过"里的字节解不开
+        # 就使读取线程抛 UnicodeDecodeError、proc.stdout 变成 None，断言以 TypeError
+        # 失败——同一环境下的偶发红灯。errors="replace" 是兜底，保证任何字节序列都
+        # 不会让本用例崩溃。
+        encoding="utf-8",
+        errors="replace",
+        env=env,
     )
     assert proc.returncode == 0, (
         f"--validate 失败（退出码 {proc.returncode}）\n"

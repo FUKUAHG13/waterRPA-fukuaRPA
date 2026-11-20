@@ -117,6 +117,63 @@ class CoreRegressionTests(QtCallbackGuardMixin, unittest.TestCase):
         self.assertIn("低分辨率画面指纹", text)
         self.assertIn("API 11200 增加 DXGI 变化通知", text)
 
+    def test_architecture_invariants_20_and_62_match_implementation(self):
+        """REVIEW-20261027-001 DC-20261027-01/02/03：文档措辞必须与被接受的实现一致。
+
+        #62 的只读范围是维护者 2026-10-07 采纳 ADV-20261006-022 时明确收窄的边界，
+        不得写回"全部全局设置只读"；末句声明的两种机制（整块登记只读 / 写回前复查运行态并拒绝写入）
+        都必须能在源码里找到对应符号——DC-20261027-03 的成因正是纯字符串断言把失实措辞
+        （"必须纳入只读登记"）锁成不可改的不变量（SUG-20261027-02）。#20 的 `-2` 工作预算判定是
+        两段（截图前、首选倍率专搜未命中后），不得写成只在截图前判定。两侧再次漂移都会失败。
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        def read(*parts):
+            with open(os.path.join(root, *parts), encoding="utf-8") as handle:
+                return handle.read()
+
+        text = read("ARCHITECTURE.md")
+        core = read("native_core", "fukua_rpa_core.cpp")
+        main_window = read("fukua_rpa", "ui", "main_window.py")
+        step_edit = read("fukua_rpa", "ui", "controllers", "workflow_step_edit.py")
+        execution = read("fukua_rpa", "ui", "controllers", "execution_controller.py")
+
+        self.assertIn("全局设置中会影响本次运行的编辑入口", text)
+        self.assertIn("ADV-20261006-022", text)
+        self.assertNotIn("方案切换、全局设置、步骤增删改", text)
+        # DC-20261027-03(c)：采纳记录要引到实际条目，而不是父级 DEC 编号。
+        self.assertIn("DEC-20260930-002-08", text)
+        # DC-20261027-03(a)：末句改成两种被接受机制，失实的登记要求不得复现。
+        self.assertNotIn("必须纳入只读登记", text)
+        self.assertIn("不得产生写回副作用", text)
+        self.assertIn("整块登记", text)
+        # DC-20261027-03(b)／SUG-20261027-02：措辞点名的机制符号必须真实存在。
+        self.assertIn("task_config_dialogs", text)
+        self.assertIn("_restore_structured_tasks", text)
+        self.assertIn("self.task_config_dialogs.add(dialog)", main_window)
+        self.assertIn("dialog.setEnabled(not locked)", execution)
+        self.assertIn(
+            "if is_runtime_editing_locked(self.host) or self.host.start_in_progress:",
+            step_edit,
+        )
+        # 写回屏蔽确实在写之前拦住：守卫之后先 return False，才可能走到 push_undo_state。
+        guard = step_edit.index("or self.host.start_in_progress:")
+        write_back = step_edit.index("self.host.push_undo_state()", guard)
+        self.assertIn("return False", step_edit[guard:write_back])
+
+        self.assertIn("判定分两段", text)
+        self.assertIn("candidates.empty() && !explicit_scale_only", text)
+        # 两段判定在实现中都真实存在：截图前的预算检查与专搜未命中后的预算检查。
+        self.assertLess(
+            core.index("if (exceeds_budget(preferred_work))"),
+            core.index("std::vector<CapturedRegion> captured_regions"),
+        )
+        self.assertIn(
+            "if (candidates.empty() && !explicit_scale_only) {",
+            core,
+        )
+        self.assertIn("return reject_for_budget();", core)
+
     def test_architecture_constraint_index_covers_every_body_constraint(self):
         """DOC-20261003-605: 约束主题索引必须覆盖正文全部编号（双向一致）。
 

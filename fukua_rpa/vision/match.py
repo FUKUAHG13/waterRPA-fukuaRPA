@@ -30,6 +30,7 @@ from .shared import (
     MAX_MATCH_CANDIDATES,
     capture_returns_physical_pixels,
     match_input_dimensions,
+    point_in_regions,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,15 +256,40 @@ class VisionMatchMixin:
         # 必须反算为物理像素，否则在 System DPI Aware 回退路径下搜索窗口被系统性偏移。
         # 跨混合-DPI 屏幕的矩形是分段变换，需按屏幕边界拆分；PMv2 下仍恒等返回一个区域。
         from fukua_rpa.coordinates import (
+            clip_input_rect_to_desktop,
             input_rect_to_physical_regions,
             system_dpi_physical_monitor_regions,
         )
 
-        physical_regions = []
+        # VS-20261027-02: 搜索范围先按**当前桌面**裁剪，再交给后端。原生 build_regions
+        # 会把每个区域裁到虚拟桌面，全部裁空时无条件回退成"整块虚拟桌面"
+        # （native_core/fukua_rpa_core.cpp:1282-1318）；PMv2 分支的
+        # input_rect_to_physical_regions 又原样透传，所以拔掉副屏或改分辨率后，一个整体
+        # 离屏的配置区域会静默变成全屏搜索并命中桌面任意位置的同一张图。范围是用户意图，
+        # 只能缩小、不能由后端兜底放大；这里逐区域拒绝空/完全离屏者，全部离屏时直接按
+        # 未命中返回，绝不扩大范围。
+        configured_regions = []
         for region in native_regions:
+            clipped = clip_input_rect_to_desktop(region)
+            if clipped is None:
+                self.performance.increment("match.native_offscreen_regions_rejected")
+                continue
+            configured_regions.append(clipped)
+        physical_regions = []
+        for region in configured_regions:
             physical_regions.extend(input_rect_to_physical_regions(region))
         if not native_regions:
+            # 用户没有配置任何区域：整桌面搜索本身就是意图，保持原回退。
             physical_regions = system_dpi_physical_monitor_regions()
+        elif not physical_regions:
+            self.performance.increment("match.native_offscreen_search_refusals")
+            if self.verbose_log_enabled(LOG_RECOGNITION):
+                self.log(
+                    "<font color='orange'>    [识别] 本步配置的区域已完全不在当前桌面范围内，"
+                    "已按未命中处理，不会扩大到其他屏幕区域搜索。</font>",
+                    LOG_RECOGNITION,
+                )
+            return []
         native_regions = physical_regions
         explicit_scales = tuple(
             dict.fromkeys(float(scale) for scale in (explicit_scales or ()))
@@ -377,6 +403,12 @@ class VisionMatchMixin:
                     True,
                 )
             )
+            # VS-20261027-02: 统一区域守卫。后端仍可能因自身兜底返回本次范围之外的
+            # 命中点（原生在裁空时回退整虚拟桌面），落点超出配置区域就不是用户要的
+            # 目标；在唯一的返回出口丢弃，而不是让每条消费路径各自补过滤。
+            if not point_in_regions(input_x, input_y, configured_regions):
+                self.performance.increment("match.native_out_of_region_hits")
+                continue
             converted.append(
                 (input_x, input_y, scale, score, input_width, input_height)
             )

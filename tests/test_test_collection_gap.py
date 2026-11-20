@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import os
 import subprocess
 import sys
 import tempfile
@@ -619,6 +620,38 @@ class ZeroCollectionTripwireTests(unittest.TestCase):
             f"\n--- stderr ---\n{proc.stderr}",
         )
         self.assertIn("零用例熔断", proc.stderr)
+
+    def test_tripwire_message_is_utf8_without_locale_help(self):
+        """TS-20261027-01：清掉 PYTHONIOENCODING 后，熔断提示本身必须是 UTF-8 字节。
+
+        上面那条用例把读取侧固定成 UTF-8，只是让**本测试**稳定；真正决定成败的是
+        写入侧。上游门禁不保证设置 PYTHONIOENCODING，而本机 locale 是 GBK：未固定
+        编码时 Python 会把这段中文按 CP936 写出，任何按 UTF-8 strict 解码的读取方
+        （包括只 `text=True` 的调用）都在读取线程里抛 UnicodeDecodeError，输出退化成
+        None——表现为"偶发"门禁失败，实则取决于调用环境。这里显式清掉环境开关、按
+        字节取回输出后再严格解码，把可解码性变成脚本自身的确定行为而不是运气。
+        """
+        pytest_only = pytest_required_modules()
+        self.assertTrue(pytest_only, "仓库中应存在顶层函数写法的模块作为样本")
+        env = dict(os.environ)
+        env.pop("PYTHONIOENCODING", None)
+        env.pop("PYTHONUTF8", None)
+        proc = subprocess.run(
+            [sys.executable, str(QT_UNITTEST_BOOTSTRAP), "-v", pytest_only[0]],
+            cwd=ROOT,
+            capture_output=True,
+            env=env,
+            timeout=300,
+        )
+        self.assertEqual(proc.returncode, 1)
+        try:
+            stderr_text = proc.stderr.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.fail(
+                "零用例熔断提示不是 UTF-8 字节流（写入侧仍按 locale 编码）："
+                f"{exc}\n前 200 字节: {proc.stderr[:200]!r}"
+            )
+        self.assertIn("零用例熔断", stderr_text)
 
 
 class GateWiringTests(unittest.TestCase):

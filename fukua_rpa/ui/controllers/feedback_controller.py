@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QMessageBox, QToolTip
 
+from ...config_schema import normalize_run_status_opacity
 from ...constants import MAX_CLICK_INDICATOR_OVERLAYS
 from ...log_policy import (
     LOG_ACTION,
@@ -91,12 +92,20 @@ class VisualFeedbackController:
             raise RuntimeError("主窗口已销毁")
         return host
 
-    def show_running_status_overlay(self, position_name, activity_name="脚本"):
+    def show_running_status_overlay(
+        self, position_name, activity_name="脚本", *, opacity_percent=None
+    ):
+        opacity = normalize_run_status_opacity(opacity_percent)
+        if opacity == 0:
+            self.hide_running_status_overlay()
+            return
         overlays = _overlays()
 
         if self.running_overlay is None:
             self.running_overlay = overlays.RunningStatusOverlay()
-        self.running_overlay.start_overlay(position_name, activity_name)
+        self.running_overlay.start_overlay(
+            position_name, activity_name, opacity_percent=opacity
+        )
 
     def update_running_status_overlay(self, data):
         if self.host._live_window_interaction:

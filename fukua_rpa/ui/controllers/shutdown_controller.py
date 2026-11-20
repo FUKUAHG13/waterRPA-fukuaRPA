@@ -17,6 +17,8 @@ from ...privacy import private_error_text, safe_error_name
 from ..lifecycle import safe_close, schedule_widget_callback
 
 if TYPE_CHECKING:
+    from PySide6.QtWidgets import QMessageBox
+
     from .host_view import HostView
 
 
@@ -27,6 +29,7 @@ class ShutdownController:
         self._host_ref = weakref.ref(host)
         self._close_retry_count = 0
         self._hook_stop_retry_count = 0
+        self._clicker_shutdown_notice: QMessageBox | None = None
 
     @property
     def host(self) -> HostView:
@@ -37,6 +40,15 @@ class ShutdownController:
 
     def close_event(self, event):
         host = self.host
+        # SAFETY: 连点器尚持有工作线程时，必须早于停调度、保存和关工具拒绝退出。
+        clicker = getattr(host, "_auto_clicker_window", None)
+        if clicker is not None:
+            event.ignore()
+            if not clicker.stop_for_shutdown():
+                self._show_clicker_shutdown_notice()
+                return
+        if self._clicker_shutdown_notice is not None:
+            self._clicker_shutdown_notice.hide()
         # 停止计划任务定时器，防止退出过程中触发新运行
         if hasattr(host, 'scheduled_service') and host.scheduled_service is not None:
             host.scheduled_service.shutdown()
@@ -196,6 +208,21 @@ class ShutdownController:
         if scheduled_service is not None:
             scheduled_service.finalize_logging()
         event.accept()
+
+    def _show_clicker_shutdown_notice(self) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QMessageBox
+
+        if self._clicker_shutdown_notice is None:
+            notice = QMessageBox(self.host)
+            notice.setWindowTitle("连点器尚未停止")
+            notice.setIcon(QMessageBox.Warning)
+            notice.setText("连点器未能及时停止，本次未退出。请在连点器停止后再次关闭主窗口。")
+            notice.setStandardButtons(QMessageBox.Ok)
+            notice.setModal(False)
+            notice.setAttribute(Qt.WA_QuitOnClose, False)
+            self._clicker_shutdown_notice = notice
+        self._clicker_shutdown_notice.show()
 
 
 #: 停止 worker 后等待多久提供「强制退出」入口（裁定 ②）。

@@ -700,6 +700,92 @@ class TestInputRectToPhysicalRegionsEdgeCases(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# clip_input_rect_to_desktop / desktop_input_bounds (VS-20261027-02)
+# ---------------------------------------------------------------------------
+
+
+class TestClipInputRectToDesktop(unittest.TestCase):
+    """搜索区域必须先裁到当前桌面，离屏区域不能交给后端兜底放大成整桌面。"""
+
+    def setUp(self):
+        _reset_module_state()
+
+    def tearDown(self):
+        _reset_module_state()
+
+    def test_bounds_shape_is_left_top_width_height(self):
+        # _virtual_screen_rect 是 LTRB，desktop_input_bounds 必须换成 x/y/w/h。
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(-1920, 0, 0, 1080)
+        ):
+            self.assertEqual(coordinates.desktop_input_bounds(), (-1920, 0, 1920, 1080))
+
+    def test_bounds_unknown_returns_none(self):
+        with mock.patch.object(coordinates, "_virtual_screen_rect", return_value=None):
+            self.assertIsNone(coordinates.desktop_input_bounds())
+
+    def test_fully_offscreen_rect_is_rejected(self):
+        # 拔掉右侧副屏后，原副屏上的区域整体落到桌面右侧之外。
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(0, 0, 2560, 1440)
+        ):
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop((3000, 100, 200, 100)))
+            # 负原点桌面：副屏被拔掉后左侧区域同样完全离屏。
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(0, 0, 2560, 1440)
+        ):
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop((-800, -600, 400, 300)))
+
+    def test_partially_offscreen_rect_is_clipped_not_dropped(self):
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(0, 0, 2560, 1440)
+        ):
+            self.assertEqual(
+                coordinates.clip_input_rect_to_desktop((2400, 1400, 400, 300)),
+                (2400, 1400, 160, 40),
+            )
+
+    def test_rect_inside_desktop_is_unchanged(self):
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(0, 0, 2560, 1440)
+        ):
+            self.assertEqual(coordinates.clip_input_rect_to_desktop((10, 20, 30, 40)), (10, 20, 30, 40))
+
+    def test_negative_origin_desktop_keeps_left_monitor_rect(self):
+        # 主屏在右、副屏在左时虚拟桌面原点为负；负坐标区域不是"离屏"。
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(-1920, 0, 2560, 1440)
+        ):
+            self.assertEqual(
+                coordinates.clip_input_rect_to_desktop((-1900, 10, 300, 200)),
+                (-1900, 10, 300, 200),
+            )
+
+    def test_empty_and_degenerate_input_returns_none(self):
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(0, 0, 2560, 1440)
+        ):
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop(None))
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop(()))
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop((0, 0, 0, 100)))
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop((0, 0, 100, -5)))
+
+    def test_unparseable_rect_returns_none(self):
+        with mock.patch.object(
+            coordinates, "_virtual_screen_rect", return_value=(0, 0, 2560, 1440)
+        ):
+            self.assertIsNone(coordinates.clip_input_rect_to_desktop(("x", 0, 1, 1)))
+
+    def test_unknown_desktop_passes_rect_through(self):
+        # 取不到桌面范围时必须原样返回：不能把"量不到"当成"离屏"来拒绝正常搜索。
+        with mock.patch.object(coordinates, "_virtual_screen_rect", return_value=None):
+            self.assertEqual(
+                coordinates.clip_input_rect_to_desktop((3000, 3000, 10, 10)),
+                (3000, 3000, 10, 10),
+            )
+
+
+# ---------------------------------------------------------------------------
 # physical_to_input_rect edge cases
 # ---------------------------------------------------------------------------
 

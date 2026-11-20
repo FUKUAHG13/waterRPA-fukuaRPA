@@ -2,28 +2,38 @@
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import os
+import subprocess
+import sys
 import threading
+import time
 import unittest
+import weakref
+from pathlib import Path
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Slot  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from fukua_rpa.ui.auto_clicker_core import _AutoClickerRunner
-from fukua_rpa.ui.auto_clicker_mixins.lifecycle import RunnerLifecycleMixin
-from fukua_rpa.ui.auto_clicker_tool import AutoClickerToolWindow
-from fukua_rpa.ui.controllers.execution_controller import ExecutionController
-from fukua_rpa.ui.controllers.hotkey_controller import HotkeyController
-from fukua_rpa.ui.controllers.mapping_controller import MappingController
-from fukua_rpa.win32_api import (
+from fukua_rpa.actions.shared import ActionsSharedMixin  # noqa: E402
+from fukua_rpa.ui.auto_clicker_core import _AutoClickerRunner  # noqa: E402
+from fukua_rpa.ui.auto_clicker_mixins.lifecycle import RunnerLifecycleMixin  # noqa: E402
+from fukua_rpa.ui.auto_clicker_tool import AutoClickerToolWindow  # noqa: E402
+from fukua_rpa.ui.controllers.execution_controller import ExecutionController  # noqa: E402
+from fukua_rpa.ui.controllers.hotkey_controller import HotkeyController  # noqa: E402
+from fukua_rpa.ui.controllers.mapping_controller import MappingController  # noqa: E402
+from fukua_rpa.win32_api import (  # noqa: E402
     HOTKEY_ID_AUTO_CLICKER_START,
     HOTKEY_ID_AUTO_CLICKER_STOP,
     HOTKEY_ID_PROFILE_START_BASE,
     HOTKEY_ID_PROFILE_STOP_BASE,
 )
+from tests.qt_test_support import create_test_window, dispose_widget  # noqa: E402
 
 
 class AutoClickerWindowTests(unittest.TestCase):
@@ -923,6 +933,432 @@ class MappingHotkeyVisibilityTests(unittest.TestCase):
             controller.check_hotkey()
 
         self.assertEqual(host.mapping_executed, [0])
+
+
+class _RealClickerEngine:
+    """Fake engine for real-QThread lifecycle tests; never injects input."""
+
+    def __init__(self, mode="instant"):
+        self.mode = mode
+        self.gate = threading.Event()
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.stop_seen = threading.Event()
+        self.release_calls = 0
+
+    def _execute_auto_clicker(self, context, stop_requested=None):
+        self.started.set()
+        if self.mode == "raise":
+            raise RuntimeError("boom")
+        if self.mode == "gated":
+            self.gate.wait(5.0)
+            return "success"
+        if self.mode == "stop_aware":
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if stop_requested is not None and stop_requested():
+                    self.stop_seen.set()
+                    return "stopped"
+                time.sleep(0.005)
+            return "timeout"
+        if self.mode == "ignore_stop":
+            self.release.wait(5.0)
+            time.sleep(0.2)
+            return "success"
+        return "success"
+
+    def release_injected_inputs(self):
+        self.release_calls += 1
+        if self.mode == "ignore_stop":
+            self.release.set()
+
+
+class _FinishedRecorder(QObject):
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    @Slot()
+    def record(self):
+        self.count += 1
+
+
+class _StalledClickerEngine(ActionsSharedMixin):
+    """Hold a real worker open while the actual tracked-release code uses fake input."""
+
+    def __init__(self, *, hold_input_lock=False):
+        self.hold_input_lock = hold_input_lock
+        self._injected_input_lock = threading.RLock()
+        self._injected_mouse_buttons = {"left"}
+        self._injected_keys = []
+        self.input_backend = mock.Mock()
+        self.started = threading.Event()
+        self.unblock = threading.Event()
+
+    def _execute_auto_clicker(self, context, stop_requested=None):
+        lock = self._injected_input_lock if self.hold_input_lock else contextlib.nullcontext()
+        with lock:
+            self.started.set()
+            self.unblock.wait(8)
+        self.release_injected_inputs()
+
+
+class AutoClickerThreadLifecycleTests(unittest.TestCase):
+    """Real QThread + Qt event-loop coverage for thread end vs business end."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _make_window(self, engine):
+        window = AutoClickerToolWindow(parent=None, engine=engine)
+        self.addCleanup(dispose_widget, self.app, window)
+        return window
+
+    def _make_main_window_with_clicker(self, engine):
+        quit_app = self.enterContext(mock.patch.object(QApplication, "quit"))
+        main = create_test_window(self, ensure_dialog=False)
+        self.enterContext(mock.patch.object(main.hotkey_controller, "unregister_global_hotkeys"))
+        self.enterContext(mock.patch.object(main.hotkey_controller, "refresh_hotkey_backend"))
+        clicker = main._auto_clicker_window = AutoClickerToolWindow(main, engine)
+        self.addCleanup(dispose_widget, self.app, clicker)
+        self.addCleanup(setattr, main, "_auto_clicker_window", None)
+        main.show()
+        clicker.show()
+        return main, clicker, quit_app
+
+    def test_main_close_timeout_does_not_wait_for_busy_input_lock(self):
+        engine = _StalledClickerEngine(hold_input_lock=True)
+        main, clicker, quit_app = self._make_main_window_with_clicker(engine)
+        self.assertTrue(clicker.request_start())
+        thread = clicker._thread
+        try:
+            self.assertTrue(engine.started.wait(2))
+            self.assertFalse(main.close(), "连点器停止超时后，主窗口必须拒绝退出")
+            self.assertTrue(thread.isRunning(), "关窗应在工作线程仍持有输入锁时返回")
+            self.assertIs(clicker._thread, thread)
+            self.assertTrue(clicker._stop_event.is_set())
+            self.assertTrue(main.isVisible())
+            self.assertTrue(main.centralWidget().isEnabled())
+            self.assertTrue(clicker.isVisible())
+            self.assertTrue(clicker._hotkeys_active)
+            engine.input_backend.mouse_up.assert_not_called()
+            quit_app.assert_not_called()
+        finally:
+            engine.unblock.set()
+            self.assertTrue(thread.wait(3000))
+        engine.input_backend.mouse_up.assert_called_once_with(button="left")
+
+    def test_hidden_clicker_timeout_preserves_main_and_allows_retry(self):
+        engine = _StalledClickerEngine()
+        main, clicker, quit_app = self._make_main_window_with_clicker(engine)
+        self.assertTrue(clicker.request_start())
+        thread = clicker._thread
+        scheduler = main.scheduled_service
+        try:
+            self.assertTrue(engine.started.wait(2))
+            self.assertTrue(clicker.close(), "工具单独关窗仍会隐藏")
+            self.assertFalse(clicker.isVisible())
+            self.assertTrue(thread.isRunning())
+            engine.input_backend.mouse_up.assert_called_once_with(button="left")
+
+            with (
+                mock.patch.object(scheduler, "shutdown") as shutdown,
+                mock.patch.object(main, "persist_profiles_state") as save,
+                mock.patch.object(main.run_controller, "stop") as stop_script,
+            ):
+                self.assertFalse(main.close(), "隐藏连点器也必须阻止主窗口退出")
+                self.assertFalse(main._close_state_saved)
+                self.assertTrue(main.profiles_autosave_timer.isActive())
+                shutdown.assert_not_called()
+                save.assert_not_called()
+                stop_script.assert_not_called()
+                quit_app.assert_not_called()
+
+            notice, = main.findChildren(QMessageBox)
+            self.assertTrue(notice.isVisible())
+            self.assertFalse(notice.isModal())
+            self.assertIn("再次关闭主窗口", notice.text())
+            with mock.patch.object(thread, "wait", return_value=False) as wait:
+                self.assertFalse(main.close())
+                self.assertEqual(main.findChildren(QMessageBox), [notice])
+                notice.close()
+                self.assertFalse(main.close())
+                self.assertTrue(notice.isVisible())
+                self.assertEqual(main.findChildren(QMessageBox), [notice])
+                self.assertEqual(wait.call_args_list, [mock.call(2000), mock.call(2000)])
+            self.assertFalse(clicker.isVisible())
+            self.assertTrue(main.isVisible())
+            quit_app.assert_not_called()
+        finally:
+            engine.unblock.set()
+            self.assertTrue(thread.wait(3000))
+
+        self.assertIs(clicker._thread, thread, "此时 Qt 的 finished 回调尚未处理")
+        self.assertTrue(main.close(), "原生线程已结束即可重试退出")
+        self.assertFalse(notice.isVisible())
+        self.assertTrue(main._close_state_saved)
+        quit_app.assert_called_once_with()
+        engine.input_backend.mouse_up.assert_called_once_with(button="left")
+
+    def test_main_close_succeeds_if_clicker_stops_within_wait(self):
+        engine = _RealClickerEngine("stop_aware")
+        main, clicker, quit_app = self._make_main_window_with_clicker(engine)
+        self.assertTrue(clicker.request_start())
+        thread = clicker._thread
+        try:
+            self.assertTrue(engine.started.wait(2))
+            self.assertTrue(main.close())
+            self.assertTrue(engine.stop_seen.is_set())
+            self.assertFalse(thread.isRunning())
+            self.assertEqual(main.findChildren(QMessageBox), [])
+            self.assertEqual(engine.release_calls, 0)
+            quit_app.assert_called_once_with()
+        finally:
+            clicker.request_stop()
+            self.assertTrue(thread.wait(3000))
+
+    def test_running_status_opacity_uses_saved_then_live_settings(self):
+        engine = _RealClickerEngine("stop_aware")
+        main, clicker, _quit_app = self._make_main_window_with_clicker(engine)
+        profile = main.profiles_data[main.current_profile_name]
+        profile.update(run_status_pos="右下角", run_status_opacity=1)
+        self.assertIsNone(getattr(main, "settings_dialog", None))
+        try:
+            self.assertTrue(clicker.request_start())
+            overlay = main.feedback_controller.running_overlay
+            self.assertEqual(overlay.activity_name, "连点器")
+            self.assertEqual(overlay.position_name, "右下角")
+            self.assertAlmostEqual(overlay.bg.graphicsEffect().opacity(), 0.01)
+        finally:
+            clicker.request_stop()
+            self.assertTrue(self._pump(lambda: clicker._thread is None))
+
+        self.assertIsNotNone(main._ensure_settings_dialog())
+        main.run_status_opacity_spin.setValue(0)
+        self.assertEqual(profile["run_status_opacity"], 1)
+        try:
+            self.assertTrue(clicker.request_start())
+            self.assertFalse(overlay.isVisible())
+            self.assertFalse(overlay.timer.isActive())
+        finally:
+            clicker.request_stop()
+            self.assertTrue(self._pump(lambda: clicker._thread is None))
+
+    def _pump(self, predicate, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.app.processEvents()
+            if predicate():
+                return True
+            time.sleep(0.001)
+        return predicate()
+
+    def _pump_drain(self):
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            self.app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_runner_does_not_shadow_native_finished(self):
+        self.assertNotIn(
+            "finished",
+            _AutoClickerRunner.__dict__,
+            "不得重新声明 finished；必须使用 QThread 原生结束通知",
+        )
+
+    def test_native_finished_is_delivered_once_per_run(self):
+        engine = _RealClickerEngine("gated")
+        window = self._make_window(engine)
+        window._on_start()
+        thread = window._thread
+        self.assertIsNotNone(thread)
+        recorder = _FinishedRecorder()
+        thread.finished.connect(recorder.record)
+        engine.gate.set()
+        self.assertTrue(self._pump(lambda: window._thread is None))
+        self._pump_drain()
+        self.assertEqual(recorder.count, 1, "每次 run 只允许一次原生 finished 投递")
+
+    def test_natural_completion_cleans_once_and_destroys_thread(self):
+        engine = _RealClickerEngine("instant")
+        window = self._make_window(engine)
+        destroyed = []
+        with mock.patch.object(
+            window, "_on_thread_finished", wraps=window._on_thread_finished
+        ) as spy:
+            window._on_start()
+            thread = window._thread
+            self.assertIsNotNone(thread)
+            thread.destroyed.connect(lambda: destroyed.append(True))
+            self.assertTrue(self._pump(lambda: window._thread is None))
+            self.assertEqual(spy.call_count, 1, "每轮清理恰好一次")
+        self.assertTrue(thread.isFinished())
+        self.assertEqual(window.status_label.text(), "已停止")
+        self.assertTrue(window.start_btn.isEnabled())
+        self.assertFalse(window.stop_btn.isEnabled())
+        self._pump_drain()
+        self.assertTrue(destroyed, "线程对象必须被销毁，不得每轮泄漏")
+
+    def test_request_stop_ends_real_worker(self):
+        engine = _RealClickerEngine("stop_aware")
+        window = self._make_window(engine)
+        window._on_start()
+        self.assertTrue(self._pump(lambda: window.is_running))
+        window.request_stop()
+        self.assertTrue(self._pump(lambda: window._thread is None, 5.0))
+        self.assertTrue(engine.stop_seen.is_set())
+        self.assertEqual(window.status_label.text(), "已停止")
+        self.assertFalse(window.is_running)
+
+    def test_engine_exception_preserves_error_text_and_can_restart(self):
+        engine = _RealClickerEngine("raise")
+        window = self._make_window(engine)
+        window._on_start()
+        self.assertTrue(self._pump(lambda: window._thread is None))
+        self.assertEqual(window.status_label.text(), "运行出错: boom")
+        self.assertEqual(window.banner_label.text(), "运行出错")
+        self.assertTrue(window.start_btn.isEnabled())
+        self.assertFalse(window.stop_btn.isEnabled())
+        self.assertFalse(window._thread_error_occurred)
+
+        window.engine = _RealClickerEngine("instant")
+        self.assertTrue(window.request_start())
+        self.assertTrue(self._pump(lambda: window._thread is None))
+        self.assertEqual(window.status_label.text(), "已停止")
+
+    def test_input_ownership_stays_true_while_thread_runs(self):
+        engine = _RealClickerEngine("stop_aware")
+        window = self._make_window(engine)
+        window._on_start()
+        self.assertTrue(self._pump(lambda: engine.started.is_set()))
+        self.assertTrue(window.is_running)
+        self.assertIsNotNone(window._thread, "运行期间 _thread 必须保持引用")
+        window.request_stop()
+        self.assertTrue(self._pump(lambda: window._thread is None, 5.0))
+
+    def test_rapid_start_stop_cycles_do_not_leak_threads(self):
+        window = self._make_window(_RealClickerEngine("instant"))
+        refs = []
+        for index in range(30):
+            window.engine = _RealClickerEngine("instant")
+            window._on_start()
+            thread = window._thread
+            self.assertIsNotNone(thread, f"第 {index} 轮未启动")
+            refs.append(weakref.ref(thread))
+            del thread
+            self.assertTrue(
+                self._pump(lambda: window._thread is None, 2.0),
+                f"第 {index} 轮清理未完成",
+            )
+        gc.collect()
+        self._pump_drain()
+        gc.collect()
+        self.assertTrue(
+            all(ref() is None for ref in refs),
+            "快速启停后不得残留 QThread 包装",
+        )
+
+    def test_stale_finished_after_sender_destroyed_keeps_new_thread(self):
+        window = self._make_window(_RealClickerEngine("instant"))
+        window._on_start()
+        window._thread.wait(3000)
+        self.assertFalse(window._thread.isRunning())
+
+        window.engine = _RealClickerEngine("stop_aware")
+        self.assertTrue(window.request_start())
+        gc.collect()
+        self.app.processEvents()
+        self.assertIsNotNone(window._thread)
+        self.assertTrue(window._thread.isRunning())
+        self.assertEqual(window.status_label.text(), "运行中...")
+
+        window.request_stop()
+        self.assertTrue(self._pump(lambda: window._thread is None, 5.0))
+
+    def test_stale_error_does_not_stop_new_thread(self):
+        window = self._make_window(_RealClickerEngine("raise"))
+        window._on_start()
+        window._thread.wait(3000)
+
+        window.engine = _RealClickerEngine("stop_aware")
+        self.assertTrue(window.request_start())
+        gc.collect()
+        self.app.processEvents()
+        self.assertFalse(window._stop_event.is_set(), "陈旧 error 不得误停新线程")
+        self.assertIsNotNone(window._thread)
+        self.assertTrue(window._thread.isRunning())
+        self.assertEqual(window.status_label.text(), "运行中...")
+
+        window.request_stop()
+        self.assertTrue(self._pump(lambda: window._thread is None, 5.0))
+
+    def test_explicit_none_thread_is_stale_and_direct_call_keeps_semantics(self):
+        window = self._make_window(_RealClickerEngine("instant"))
+        sentinel_thread = mock.MagicMock()
+        window._thread = sentinel_thread
+        window._on_thread_finished(None)
+        self.assertIs(window._thread, sentinel_thread)
+        self.assertEqual(window.status_label.text(), "就绪")
+
+        window._on_thread_finished()
+        self.assertIsNone(window._thread)
+        self.assertEqual(window.status_label.text(), "已停止")
+
+    def test_close_event_waits_and_cleans_without_extra_release(self):
+        engine = _RealClickerEngine("stop_aware")
+        window = self._make_window(engine)
+        window._on_start()
+        self.assertTrue(self._pump(lambda: engine.started.is_set()))
+        with mock.patch("fukua_rpa.ui.auto_clicker_tool.QDialog.closeEvent"):
+            window.closeEvent(QCloseEvent())
+        self.assertTrue(window._stop_event.is_set())
+        self.assertTrue(self._pump(lambda: window._thread is None, 5.0))
+        self.assertEqual(engine.release_calls, 0)
+
+    def test_close_event_timeout_releases_inputs_and_keeps_reference(self):
+        engine = _RealClickerEngine("ignore_stop")
+        window = self._make_window(engine)
+        window._on_start()
+        self.assertTrue(self._pump(lambda: engine.started.is_set()))
+        started_at = time.monotonic()
+        with mock.patch("fukua_rpa.ui.auto_clicker_tool.QDialog.closeEvent"):
+            window.closeEvent(QCloseEvent())
+        self.assertGreaterEqual(time.monotonic() - started_at, 2.0)
+        self.assertEqual(engine.release_calls, 1)
+        self.assertIsNotNone(window._thread, "超时后必须保持线程引用")
+        self.assertTrue(window.is_running, "释放后的短暂收尾期仍是运行所有权")
+        thread = window._thread
+        self.assertTrue(thread.wait(5000))
+        self.assertTrue(self._pump(lambda: window._thread is None, 5.0))
+        self.assertFalse(thread.isRunning())
+
+    def test_fast_start_stop_subprocess_does_not_abort(self):
+        result = self._run_probe("tests.auto_clicker_thread_exit_probe", "300")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("early 0", result.stdout)
+        self.assertIn("survived", result.stdout)
+
+    def test_stale_event_subprocess_keeps_new_thread(self):
+        result = self._run_probe("tests.auto_clicker_stale_event_probe")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("guard_kept_new_thread True", result.stdout)
+        self.assertIn("survived", result.stdout)
+
+    def _run_probe(self, module, *args):
+        env = {
+            **os.environ,
+            "QT_QPA_PLATFORM": "offscreen",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        return subprocess.run(
+            [sys.executable, "-B", "-m", module, *args],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            timeout=90,
+            capture_output=True,
+            text=True,
+        )
 
 
 if __name__ == "__main__":

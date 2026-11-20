@@ -3,11 +3,14 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from fukua_rpa.ui.usage_notices_dialog import (
+    _SEARCH_CATEGORY,
     FirstRunChoiceDialog,
     UsageNoticesDialog,
+    filtered_usage_notices,
     show_first_run_choice,
     sorted_usage_categories,
     sorted_usage_notices,
@@ -59,6 +62,76 @@ class UsageNoticeCatalogTests(QtCallbackGuardMixin, unittest.TestCase):
         keys = [notice.key for notice in USAGE_NOTICES]
         self.assertEqual(len(keys), len(set(keys)))
         self.assertEqual(set(keys), set(NOTICE_BY_KEY))
+
+    def test_newly_added_boundary_notices_are_present(self):
+        """本轮扩充的四条须常驻可见、分类正确，且不触发首次弹窗。"""
+        expected = {
+            "input_timeline_recording": (
+                "操作与兼容",
+                ("输入时序", "新建步骤下拉框", "跨版本兼容", "逆序释放"),
+            ),
+            "key_mapping_runtime": (
+                "操作与兼容",
+                ("忽略", "按键映射模式", "关", "启用状态"),
+            ),
+            "profile_quick_launch": (
+                "安全与执行",
+                ("同一个主进程", "独立快照", "同一时刻", "冲突"),
+            ),
+            "plugin_lifecycle": (
+                "数据与隐私",
+                ("默认禁用", "不能卸载", "升级", "阻断"),
+            ),
+        }
+        for key, (category, phrases) in expected.items():
+            notice = NOTICE_BY_KEY[key]
+            self.assertEqual(notice.category, category, key)
+            self.assertFalse(notice.one_time_key, key)
+            joined = notice.title + notice.body
+            for phrase in phrases:
+                self.assertIn(phrase, joined, f"{key} 缺少关键措辞：{phrase}")
+
+    def test_filtered_usage_notices_matches_title_body_and_category(self):
+        # 标题命中
+        self.assertIn(
+            "input_timeline_recording",
+            {n.key for n in filtered_usage_notices("输入时序")},
+        )
+        # 正文命中（本轮 game 条目正文含“反作弊”）
+        self.assertIn(
+            "game_input_compatibility",
+            {n.key for n in filtered_usage_notices("反作弊")},
+        )
+        # 分类名命中（跨全部条目）
+        data_hits = {n.key for n in filtered_usage_notices("数据与隐私")}
+        self.assertIn("plugin_lifecycle", data_hits)
+        self.assertIn("credentials", data_hits)
+        # 大小写不敏感（英文正文片段）
+        self.assertEqual(
+            {n.key for n in filtered_usage_notices("ROBLOX")},
+            {n.key for n in filtered_usage_notices("roblox")},
+        )
+        # 空关键词返回空集，交由调用方恢复目录
+        self.assertEqual(filtered_usage_notices(""), [])
+        self.assertEqual(filtered_usage_notices("   "), [])
+        self.assertEqual(filtered_usage_notices("不存在的关键词xyz"), [])
+
+    def test_game_input_boundary_is_explained(self):
+        """游戏/反作弊的注入兼容边界必须常驻使用注意，且口径不夸大。"""
+        notice = NOTICE_BY_KEY["game_input_compatibility"]
+        self.assertEqual(notice.category, "操作与兼容")
+        joined = notice.title + notice.body
+        for phrase in (
+            "反作弊",
+            "注入",
+            "硬件",
+            "管理员",
+        ):
+            self.assertIn(phrase, joined)
+        self.assertFalse(
+            notice.one_time_key,
+            "该边界为常驻查阅项，不应触发首次弹窗",
+        )
 
     def test_editor_and_execution_boundaries_are_explained(self):
         expected = {
@@ -119,6 +192,89 @@ class UsageNoticeCatalogTests(QtCallbackGuardMixin, unittest.TestCase):
         self.assertEqual(dialog.category_list.count(), len(categories))
         self.assertGreater(dialog.notice_list.count(), 0)
         self.assertTrue(dialog.details.toPlainText().strip())
+
+
+class UsageNoticeSearchDialogTests(QtCallbackGuardMixin, unittest.TestCase):
+    """搜索栏集成：跨分类结果、恢复目录、空态与正文联动。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _dialog(self):
+        dialog = UsageNoticesDialog(None, _SettingsStub())
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    @staticmethod
+    def _visible_keys(dialog):
+        return {
+            str(dialog.notice_list.item(i).data(Qt.UserRole))
+            for i in range(dialog.notice_list.count())
+        }
+
+    def test_search_shows_cross_category_results_with_category_label(self):
+        dialog = self._dialog()
+        # “关闭”一词横跨四个分类，用于验证搜索确实跨全部类别。
+        dialog.search_edit.setText("关闭")
+        self.assertEqual(dialog.category_list.count(), 1)
+        self.assertEqual(
+            str(dialog.category_list.item(0).data(Qt.UserRole)),
+            _SEARCH_CATEGORY,
+        )
+        keys = self._visible_keys(dialog)
+        self.assertGreater(len(keys), 1)
+        # 结果确实来自多个不同分类（从条目文本前缀读取分类名）。
+        prefixes = {
+            dialog.notice_list.item(i).text().split(" · ", 1)[0]
+            for i in range(dialog.notice_list.count())
+        }
+        self.assertGreater(len(prefixes), 1)
+        # 条目文本带分类名，便于区分跨分类结果。
+        first_label = dialog.notice_list.item(0).text()
+        self.assertIn(" · ", first_label)
+
+    def test_search_auto_selects_first_result_and_shows_body(self):
+        dialog = self._dialog()
+        dialog.search_edit.setText("输入时序")
+        self.assertGreater(dialog.notice_list.count(), 0)
+        self.assertIsNotNone(dialog.notice_list.currentItem())
+        self.assertIn("输入时序", dialog.details.toPlainText())
+
+    def test_empty_search_restores_three_level_catalog(self):
+        dialog = self._dialog()
+        baseline_categories = [
+            str(dialog.category_list.item(i).text())
+            for i in range(dialog.category_list.count())
+        ]
+        dialog.search_edit.setText("反作弊")
+        self.assertEqual(dialog.category_list.count(), 1)
+        dialog.search_edit.setText("")
+        restored = [
+            str(dialog.category_list.item(i).text())
+            for i in range(dialog.category_list.count())
+        ]
+        self.assertEqual(restored, baseline_categories)
+        self.assertGreater(dialog.notice_list.count(), 0)
+        self.assertTrue(dialog.details.toPlainText().strip())
+
+    def test_clicking_search_result_category_keeps_results(self):
+        dialog = self._dialog()
+        dialog.search_edit.setText("数据与隐私")
+        expected = self._visible_keys(dialog)
+        item = dialog.category_list.item(0)
+        dialog._show_category(item, None)
+        self.assertEqual(self._visible_keys(dialog), expected)
+
+    def test_search_with_no_match_shows_empty_state(self):
+        dialog = self._dialog()
+        dialog.search_edit.setText("不存在的关键词xyz")
+        self.assertEqual(dialog.notice_list.count(), 0)
+        self.assertIn("没有匹配", dialog.details.toPlainText())
+
+    def test_search_clearing_button_is_available(self):
+        dialog = self._dialog()
+        self.assertTrue(dialog.search_edit.isClearButtonEnabled())
 
 
 class FirstUseNoticeSwitchTests(QtCallbackGuardMixin, unittest.TestCase):

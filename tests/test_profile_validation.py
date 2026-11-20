@@ -17,6 +17,29 @@ class ProfileValidationTests(unittest.TestCase):
         prepared["tasks"].append({"type": 5.0, "value": "0"})
         self.assertEqual(source["tasks"], [])
 
+    def test_running_status_opacity_defaults_and_accepts_zero(self):
+        old_profile = default_profile_config()
+        old_profile.pop("run_status_opacity")
+        self.assertEqual(validate_profile_for_ui(old_profile)["run_status_opacity"], 100)
+        for value, expected in (
+            (0, 0),
+            (1, 1),
+            (46, 46),
+            (100, 100),
+            (-1, 100),
+            (101, 100),
+            (False, 100),
+            (0.5, 100),
+            ("0", 100),
+            (None, 100),
+        ):
+            with self.subTest(value=value):
+                prepared = validate_profile_for_ui(
+                    dict(old_profile, run_status_opacity=value)
+                )
+                self.assertIs(type(prepared["run_status_opacity"]), int)
+                self.assertEqual(prepared["run_status_opacity"], expected)
+
     def test_rejects_invalid_runtime_and_ui_values(self):
         cases = {
             "confidence": ("conf", "not-a-number", "全局相似度"),

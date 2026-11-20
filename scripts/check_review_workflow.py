@@ -49,14 +49,14 @@ ROUTES = {
     "review_disputes_resolved": {"prompt_5"}, "review_disputes_unresolved": {"prompt_4b", "environment_required"},
     "third_party_review_resolved": {"prompt_5"}, "maintainer_decision_required": {"maintainer_decision"},
     "canonical_report_ready": {"prompt_6"}, "implementation_plan_ready": {"prompt_7", "maintainer_decision"},
-    "implementation_waiting_for_verification": {"prompt_8"},
+    "implementation_waiting_for_verification": {"prompt_8", "delivery_closeout"},
     "repair_verification_passed": {"delivery_closeout"}, "repair_changes_required": {"prompt_9"},
     "repair_verification_blocked": {"environment_required", "maintainer_decision"},
     "rework_submitted": {"prompt_10", "environment_required", "maintainer_decision"},
     "rework_verification_passed": {"delivery_closeout"}, "rework_changes_required": {"prompt_9"},
     "rework_verification_blocked": {"environment_required", "maintainer_decision"},
     "rework_factual_dispute": {"prompt_10b", "environment_required"}, "rework_dispute_resolved": {"prompt_9"},
-    "delivery_complete": {"stop"}, "delivery_blocked": {"environment_required"}, "delivery_local_only": {"stop"},
+    "delivery_complete": {"stop"}, "delivery_blocked": {"environment_required", "stop"}, "delivery_local_only": {"stop"},
 }
 PENDING_FIELDS = (
     "transferred_ids", "pending_risk_ids", "pending_decision_ids",
@@ -167,6 +167,22 @@ def _check_report(path, ledger=None, *, legacy=False, mapping=None):
         for field, choices in ENUMS.items():
             if field in metadata:
                 require(isinstance(metadata[field], str) and metadata[field] in choices, f"{field} 枚举无效")
+        # INVARIANT: 收尾动作不授予通过；pending 和受阻停止均不能冒充 complete。
+        if status == "implementation_waiting_for_verification" and action == "delivery_closeout":
+            require(metadata.get("executing_role") == "A", "pending 收尾仅供实施 A")
+            require(metadata.get("delivery_status") == "pending", "delivery_closeout 仅允许 delivery_status: pending")
+        if status == "delivery_blocked" and action == "stop":
+            require(metadata.get("executing_role") == "A", "受阻停止仅供实施 A")
+            require(metadata.get("delivery_status") == "blocked" and metadata.get("required_gate_status") == "blocked",
+                    "受阻停止必须保留交付及本阶段门禁 blocked")
+            require(_ids(metadata, "unmet_required_gate_ids") or _ids(metadata, "blocked_ids"), "受阻停止缺少阻塞 ID")
+            require(metadata.get("release_readiness") in {"not_evaluated", "blocked"}, "受阻停止不能声明发布 ready")
+            for field in ("stop_reason", "resume_condition"):
+                require(isinstance(metadata.get(field), str) and metadata[field].strip(), f"受阻停止缺少 {field}")
+        if status == "delivery_complete":
+            require(metadata.get("delivery_status") == "complete", "交付完成路由必须声明 complete")
+            require(metadata.get("required_gate_status") == "passed", "交付本阶段必需门禁未通过")
+            require(not any(_ids(metadata, field) for field in EMPTY_WHEN_PASSED), "交付完成仍含阻塞/未通过项")
         c_arbitration = metadata.get("executing_role") == "C" and metadata.get("workflow_stage") == "rework_arbitration"
         if metadata.get("workflow_stage") == "rework_arbitration" or (
             metadata.get("executing_role") == "C" and status in {"rework_factual_dispute", "rework_dispute_resolved"}
@@ -220,6 +236,8 @@ def _check_report(path, ledger=None, *, legacy=False, mapping=None):
     require(tail == [f"流程状态：{metadata['workflow_status']}", f"下一步使用：{display}",
                      f"下一步交接文件：@file:{target}"], "文件尾三行与元数据不一致")
     pending = set().union(*(_ids(metadata, field) for field in PENDING_FIELDS))
+    if not legacy and status == "delivery_blocked" and action == "stop":
+        pending |= _ids(metadata, "unmet_required_gate_ids") | _ids(metadata, "blocked_ids")
     for field in EMPTY_WHEN_PASSED:
         _ids(metadata, field)
     passed = metadata.get("repair_verification_status") == "passed" or metadata.get("rework_verification_status") == "passed"

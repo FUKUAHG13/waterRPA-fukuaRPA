@@ -454,6 +454,10 @@ class LogController:
         # explicit bindings so their connection order and behavior stay intact.
         # （ui_scale_edit 已由宿主态阶段绑定，C-1）
 
+        host.run_status_opacity_spin.valueChanged.connect(
+            lambda value: host.log_setting_change("运行提示不透明度", value)
+        )
+
         # FR-20260812-D12-002: 三项设置此前零 signal 绑定，改动不触发
         # mark_profile_dirty，3s 自动保存不落盘（仅崩溃/强杀场景丢失）。
         host.step_adjust_follow_chk.stateChanged.connect(

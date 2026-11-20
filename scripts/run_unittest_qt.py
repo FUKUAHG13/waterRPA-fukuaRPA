@@ -18,6 +18,7 @@ gracefully reuse the shared instance via their ``instance() or []`` guard.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import unittest
 from pathlib import Path
@@ -29,6 +30,32 @@ from PySide6.QtWidgets import QApplication
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _pin_stdio_to_utf8() -> None:
+    """固定本引导脚本自身输出为 UTF-8（TS-20261027-01）。
+
+    门禁把本脚本的输出当子进程管道读取。不固定编码时 Python 按调用方 locale 的
+    首选编码写出——本机 CP936/GBK、CI 常是 UTF-8——读取侧却按 UTF-8 解码，于是
+    「零用例熔断」这类中文提示变成解不开的字节：父进程解码线程抛
+    UnicodeDecodeError、stdout/stderr 退化成 None，门禁以一次与代码无关的
+    TypeError 失败，看起来像偶发。写死 UTF-8 才是根治；
+    ``errors="backslashreplace"`` 保证连无法编码的字符也只转义、不抛异常。
+
+    Qt C++ 层仍会按 ANSI 代码页往同一个 fd 写原生告警，因此读取侧的
+    ``errors="replace"`` 兜底必须保留，两侧各管一头。
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        # 被替换成非 TextIOWrapper（测试打桩、重定向到自定义流）时保持原样。
+        with contextlib.suppress(ValueError, OSError):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_pin_stdio_to_utf8()
 
 
 def _build_unittest_argv(arguments: list[str]) -> list[str]:

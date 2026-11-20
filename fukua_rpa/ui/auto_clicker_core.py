@@ -32,7 +32,11 @@ _SPEED_PRESETS = [
 class _AutoClickerRunner(QThread):
     """在独立线程中运行引擎的连点器逻辑，避免阻塞界面。"""
 
-    finished = Signal()
+    # INVARIANT: 不要重新声明 finished，也不要在 run() 内提前 emit 结束通知。
+    # 业务结束不等于线程可销毁；重声明会解析到 QThread 原生 finished 索引，
+    # 手动 emit 会在 run() 返回前发出一次原生结束通知，使 deleteLater 在
+    # QThread 仍运行时执行析构（Qt6 qFatal / 0xC0000409）。清理必须等 Qt 在
+    # run() 返回后发出的原生 finished。
     error = Signal(str)
 
     def __init__(self, engine, task, stop_event):
@@ -64,5 +68,3 @@ class _AutoClickerRunner(QThread):
             )
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
-        finally:
-            self.finished.emit()

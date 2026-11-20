@@ -210,6 +210,17 @@ class WorkflowStepEditMixin:
     ):
         if before == after:
             return False
+        # INVARIANT: 运行期只读（ARCHITECTURE.md #62）。批量设置与分组调整都从阻塞式
+        # 对话框取值，各入口的 is_runtime_editing_locked 守卫只拒绝"运行中才打开"；
+        # 热键或计划任务可以在对话框保持打开期间启动运行，所以写回前必须再查一次。
+        # 这些对话框不登记进 task_config_dialogs 整块禁用：它们是应用级模态，禁用后
+        # 用户在运行期间连关闭对话框、点停止都做不到。
+        if is_runtime_editing_locked(self.host) or self.host.start_in_progress:
+            QToolTip.showText(
+                QCursor.pos(), "脚本正在运行，本次步骤修改未应用。", self.host
+            )
+            self.host.append_application_log("步骤修改未应用：脚本正在运行。")
+            return False
         self.host.push_undo_state()
         self.host.restore_task_snapshot(after)
         selected_ids = {str(value) for value in selected_ids}

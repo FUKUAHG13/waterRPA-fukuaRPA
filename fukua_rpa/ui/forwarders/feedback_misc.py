@@ -48,9 +48,11 @@ class FeedbackMiscForwarderMixin:
         return self.feedback_controller.hide_running_status_overlay(activity_name)
 
     # FR-20260809-D8-⑤: 由 main_window 内联收拢至本 mixin（与 update/hide 同域）。
-    def show_running_status_overlay(self, position_name, activity_name="脚本"):
+    def show_running_status_overlay(
+        self, position_name, activity_name="脚本", *, opacity_percent=None
+    ):
         return self.feedback_controller.show_running_status_overlay(
-            position_name, activity_name
+            position_name, activity_name, opacity_percent=opacity_percent
         )
 
     def collect_coordinate_click_preview_points(self, max_points=800):

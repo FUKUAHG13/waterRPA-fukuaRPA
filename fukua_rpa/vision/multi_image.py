@@ -25,6 +25,7 @@ from .core import (
 from .shared import (
     FAST_SEARCH_MIN_RADIUS,
     match_input_dimensions,
+    point_in_regions,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,11 +194,8 @@ class VisionMultiImageMixin:
         return click_x, click_y
 
     def point_in_search_regions(self, x, y, search_regions):
-        regions = self.normalized_regions(search_regions)
-        if not regions:
-            return True
-        px, py = float(x), float(y)
-        return any(rx <= px < rx + rw and ry <= py < ry + rh for rx, ry, rw, rh in regions)
+        # 与 native_find_targets 的命中点过滤共用同一实现（VS-20261027-02）。
+        return point_in_regions(x, y, self.normalized_regions(search_regions))
 
     def quick_search_region(
         self,

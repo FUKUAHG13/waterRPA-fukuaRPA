@@ -98,13 +98,29 @@ class UntilConditionController:
         )
 
     def start_overlay_rect_pick(self, cond_idx):
-        """框选覆盖匹配的子区域位置（相对于大区域）。"""
+        """框选覆盖匹配的子区域位置（限制在大区域内，坐标相对大区域）。"""
         host = self.dialog
+        widgets = host.until_condition_widgets.get(cond_idx)
+        if not widgets:
+            return
+        region = parse_region_text(widgets["region"].text())
+        if not region:
+            QMessageBox.information(
+                host,
+                "先框选大区域",
+                "请先用“区”按钮框选大区域，再在其中框选覆盖小图的子区域位置。",
+            )
+            return
         region_window_manager.close(host, ("until", cond_idx))
+        # DESIGN: 覆盖匹配在大区域截图内做模板匹配，overlay_rect 存的是相对大区域的
+        # 偏移（validation._region_outside 与 engine.evaluate_overlay_match_condition
+        # 都按相对坐标判定）。不限制框选范围时，大区域原点非零就会把屏幕绝对坐标写进
+        # 字段，保存后被判越界、运行期条件静默恒假（VS-20261027-01）。
         win = region_window_manager.open(
             host=host,
             key=("until", cond_idx),
             purpose="condition",
+            restrict_rect=region,
             on_selected=lambda rect, i=cond_idx: self._on_overlay_rect_selected(i, rect),
         )
         host.until_region_windows[cond_idx] = win
@@ -115,7 +131,7 @@ class UntilConditionController:
     def _on_overlay_rect_selected(self, cond_idx, rect):
         widgets = self.dialog.until_condition_widgets.get(cond_idx)
         if widgets:
-            widgets["overlay_rect"].setText(format_region_text(rect))
+            self._store_region_relative_rect(widgets, rect, "overlay_rect")
 
     def on_region_selected(self, cond_idx, rect):
         widgets = self.dialog.until_condition_widgets.get(cond_idx)
@@ -152,10 +168,17 @@ class UntilConditionController:
         )
 
     def _on_sub_region_selected(self, cond_idx, rect):
-        host = self.dialog
-        widgets = host.until_condition_widgets.get(cond_idx)
-        if not widgets:
-            return
+        widgets = self.dialog.until_condition_widgets.get(cond_idx)
+        if widgets:
+            self._store_region_relative_rect(widgets, rect, "sub_region")
+
+    def _store_region_relative_rect(self, widgets, rect, field):
+        """把屏幕绝对选区换算成相对大区域左上角的偏移并写入 *field*。
+
+        sub_region 与 overlay_rect 共用本函数（VS-20261027-01）：两者在校验侧
+        （``validation._region_outside``）和执行侧都按相对大区域的坐标解释，各自
+        实现一次换算就会再次漂移。
+        """
         region = parse_region_text(widgets["region"].text())
         if not region:
             return
@@ -169,4 +192,4 @@ class UntilConditionController:
         if right <= left or bottom <= top:
             return
         relative = (left - bx, top - by, right - left, bottom - top)
-        widgets["sub_region"].setText(format_region_text(relative))
+        widgets[field].setText(format_region_text(relative))

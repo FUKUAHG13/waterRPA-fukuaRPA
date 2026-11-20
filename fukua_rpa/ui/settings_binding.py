@@ -4,7 +4,11 @@
 import contextlib
 import logging
 
-from ..config_schema import default_profile_config, migrate_profile_config
+from ..config_schema import (
+    default_profile_config,
+    migrate_profile_config,
+    normalize_run_status_opacity,
+)
 from ..log_policy import (
     DEFAULT_CUSTOM_LOG_CATEGORIES,
     LOG_APPLICATION,
@@ -31,6 +35,32 @@ def capture_global_settings(host):
     return _capture_global_settings_all(host)
 
 
+def capture_running_status_settings(host):
+    """Read the clicker's display preferences without constructing settings."""
+    if getattr(host, "_settings_dialog_ready", False):
+        return (
+            host.run_status_chk.isChecked(),
+            host.run_status_pos_combo.currentText(),
+            host.run_status_opacity_spin.value(),
+        )
+    profiles = getattr(host, "profiles_data", {})
+    config = profiles.get(getattr(host, "current_profile_name", ""), {})
+    return (
+        config_bool(config.get("run_status_tip", True)),
+        config.get("run_status_pos", "右上角"),
+        normalize_run_status_opacity(config.get("run_status_opacity")),
+    )
+
+
+def capture_host_owned_settings(host):
+    """Capture the host-owned settings controls, ignoring dialog-owned ones.
+
+    供设置对话框首开使用：首开重放的配置来自 ``profiles_data``，而它只在 3 秒
+    自动保存里刷新，所以界面刚改、尚未落盘的宿主态值必须单独取一次快照。
+    """
+    return _capture_global_settings_host_only(host)
+
+
 def _capture_global_settings_host_only(host):
     tasks = host.snapshot_tasks()
     log_policy = host.current_log_policy()
@@ -53,6 +83,10 @@ def _capture_global_settings_host_only(host):
             "scan_regions": host.engine.scan_regions,
             "key_mapping_count": len(getattr(host, "key_mapping_rows", [])),
             "key_mappings": host.get_key_mappings_config(),
+            # FR-20261117-002：映射开关由宿主持有（main_window._build_host_owned_settings_controls），
+            # 首开设置走 host-only 快照恢复；不在此抓取会把未落盘的开关/点击方式回退到 profiles_data 旧值。
+            "mapping_mode_enabled": host.mapping_mode_chk.isChecked(),
+            "mapping_click_mode": host.mapping_click_mode_combo.currentText(),
             "tasks": tasks,
         }
     )
@@ -133,6 +167,7 @@ def _capture_global_settings_all(host):
             "top": host.top_chk.isChecked(),
             "run_status_tip": host.run_status_chk.isChecked(),
             "run_status_pos": host.run_status_pos_combo.currentText(),
+            "run_status_opacity": host.run_status_opacity_spin.value(),
             "click_indicator": host.click_indicator_chk.isChecked(),
             "mouse_trail": host.mouse_trail_chk.isChecked(),
             "start_step": host.start_step_edit.text(),
@@ -406,6 +441,7 @@ def _apply_global_settings_all(host, cfg, *, apply_tasks=True):
     host.run_status_pos_combo.setCurrentText(
         str(cfg.get("run_status_pos", "右上角"))
     )
+    host.run_status_opacity_spin.setValue(cfg["run_status_opacity"])
     host.click_indicator_chk.setChecked(
         config_bool(cfg.get("click_indicator", True))
     )
@@ -569,3 +605,16 @@ def apply_settings_controls(host, cfg):
         True when applied, False when the pre-check failed or was rolled back.
     """
     return apply_global_settings(host, cfg, apply_tasks=False)
+
+
+def restore_host_owned_settings(host, cfg):
+    """Re-apply a ``capture_host_owned_settings`` snapshot onto the host controls.
+
+    INVARIANT: 设置对话框首开只应填充**对话框自有**控件。``apply_settings_controls``
+    走全量应用器，会顺带把 13 个宿主态控件写回已保存快照（UI-20261027-02），因此
+    紧随其后用首开前抓的界面快照恢复一次。只走宿主态语句：不重建步骤列表、不关闭
+    步骤设置对话框，也不触碰对话框自有控件。
+
+    不做整份预检：``cfg`` 就是界面当前值本身，不存在"外部导入的脏数据"这一风险面。
+    """
+    _apply_global_settings_host_only(host, cfg, apply_tasks=False)

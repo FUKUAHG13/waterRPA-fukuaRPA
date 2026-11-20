@@ -17,12 +17,25 @@ from .scene_wake import (
     compare_scene_sets,
     make_scene_signature,
     normalize_sensitivity,
+    scene_signature_source,
 )
 from .shared import (
     _MAX_SCENE_SIGNATURE_CACHE,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _scene_backend_switched(anchor, current) -> bool:
+    """Return whether a fingerprint set changed producer backend.
+
+    VS-20261027-05: 原生熔断或某次原生返回 None 后，`capture_scene_signatures` 会整体
+    改走 PIL 路径（反之亦然）。两条生产者取整不同，直接比较会被读成一次真实变化；
+    来源切换时必须重建基线，而不是判断画面变了。
+    """
+    before = scene_signature_source(anchor)
+    after = scene_signature_source(current)
+    return bool(before) and bool(after) and before != after
 
 
 def _scene_change_result(anchor, previous, current, sensitivity):
@@ -134,7 +147,7 @@ class VisionSceneMixin:
                             break
                         width, height, pixels = raw
                         signatures.append(
-                            SceneSignature(width, height, pixels)
+                            SceneSignature(width, height, pixels, "native")
                         )
                     if signatures:
                         self.performance.increment("wake.scene_captures")
@@ -391,6 +404,11 @@ class VisionSceneMixin:
                             del self.scene_signature_cache[_k]
                     self.scene_signature_cache[context.get("key")] = current
                 previous = current
+                if _scene_backend_switched(anchor, current):
+                    # VS-20261027-05: 上面的比较已把不同来源读成"不可比较"（不触发），
+                    # 这里把锚点也换成新来源，否则整段等待都失去锚点侧的累计变化检测。
+                    self.performance.increment("wake.scene_backend_reanchors")
+                    anchor = current
                 if confirmed is not None:
                     self.performance.increment("wake.scene_triggers")
                     self.performance.increment(
@@ -437,6 +455,12 @@ class VisionSceneMixin:
                 context.get("search_regions")
             )
             if not current:
+                continue
+            if _scene_backend_switched(anchor, current):
+                # VS-20261027-05: 来源切换只重建基线，本轮不判定变化。
+                self.performance.increment("wake.scene_backend_reanchors")
+                anchor = current
+                previous = current
                 continue
             self.performance.increment("wake.scene_checks")
             changed = _scene_change_result(

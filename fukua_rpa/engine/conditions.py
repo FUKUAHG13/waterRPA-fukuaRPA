@@ -641,6 +641,15 @@ class UntilConditionMixin:
         finally:
             self._until_capture_cache = previous_capture_cache
 
+        # VS-20261027-04: 急停落在最后一次识别里时，原生把取消折叠成"空结果"
+        # （vision/match.py 的 NATIVE_RESULT_CANCELLED → []），"图片消失"会把它读成
+        # "已消失"而判为满足。上面的停止位只在每个条件**之前**检查，所以必须在聚合
+        # 与记录之前再查一次：用户已按急停的那一轮不得写成"条件已满足"，也不得据此
+        # 解析分支跳转。下一步的 attempt 循环入口同样会查停止位，本检查不新增点击，
+        # 只修正日志、轨迹与分支判定。
+        if self.check_stop_flag():
+            return "stopped"
+
         satisfied = any(results) if logic == "任一满足" else all(results)
         if self.log_level >= 1:
             color = "#4CAF50" if satisfied else "#FF9800"

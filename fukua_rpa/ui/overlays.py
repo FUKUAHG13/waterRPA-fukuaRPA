@@ -11,8 +11,16 @@ from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ..config_schema import DEFAULT_RUN_STATUS_OPACITY
 from ..coordinates import (
     ScreenCoordinateMapper,
     input_to_physical_coordinates,
@@ -743,6 +751,7 @@ class RunningStatusOverlay(QWidget):
             f"background-color: {OVERLAY_BG}; border-radius: 8px; border: 2px solid {COLOR_FOCUS};"
         )
         layout.addWidget(self.bg)
+        self._opacity_effect = None
 
         inner = QVBoxLayout(self.bg)
         # UI-CONVENTION: allow layout-metrics reason=左右内边距与固定宽度、字号使用同一 DPI/界面倍率，保证留白对称
@@ -764,7 +773,16 @@ class RunningStatusOverlay(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_text)
 
-    def start_overlay(self, position_name, activity_name="脚本"):
+    def start_overlay(
+        self, position_name, activity_name="脚本", *, opacity_percent=DEFAULT_RUN_STATUS_OPACITY
+    ):
+        # 在内容层合成透明度，保留顶层窗口原有的点击穿透和截屏排除。
+        if opacity_percent < 100 and self._opacity_effect is None:
+            self._opacity_effect = QGraphicsOpacityEffect(self.bg)
+            self.bg.setGraphicsEffect(self._opacity_effect)
+        if self._opacity_effect is not None:
+            self._opacity_effect.setOpacity(opacity_percent / 100)
+            self._opacity_effect.setEnabled(opacity_percent < 100)
         self.position_name = position_name
         self.activity_name = str(activity_name or "脚本")
         self.start_time = time.time()

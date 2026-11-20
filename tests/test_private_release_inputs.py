@@ -24,6 +24,7 @@ from scripts.private_release_inputs import (
     is_private_validation_path,
     load_refactor_baseline,
 )
+from tests import env_patch
 
 
 def seed_inputs(root: Path) -> None:
@@ -38,7 +39,7 @@ class PrivateReleaseInputsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.environment = mock.patch.dict(os.environ)
+        self.environment = mock.patch.object(os, "environ", env_patch.host_environ())
         self.environment.start()
         self.addCleanup(self.environment.stop)
         os.environ.pop(BOUND_ROOT_ENV, None)

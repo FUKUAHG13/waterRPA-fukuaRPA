@@ -136,6 +136,71 @@ class GlobalMappingTests(unittest.TestCase):
             self.settings, self.backup, {"A": good, "B": dict(good)}, "A", backup_count=0
         )
 
+    def test_rejected_save_after_backup_failure_leaves_shared_state_untouched(self):
+        """CF-20261027-01：OSError 触发面下被拒绝的保存同样不得留下半次状态。
+
+        共享全局键原先排在版本读取、备份归档、原子写、裁剪之前，是本次保存的第一次
+        落盘；磁盘满/备份目录不可写这类 OSError 因此留下「全局键已是新值、profiles
+        仍是旧值」。现在共享键移到全部可失败步骤之后，与上面校验失败用例同口径。
+        """
+        import copy
+        from unittest import mock
+
+        import fukua_rpa.config_store as config_store
+
+        good = _profile(key_mappings=[{"hotkey": "F1", "coord": "1,1", "enabled": False}])
+        persist_profiles(
+            self.settings,
+            self.backup,
+            {"A": good, "B": dict(good)},
+            "A",
+            backup_count=2,
+        )
+        before_key = self.settings.value(GLOBAL_MAPPING_KEY, "")
+        self.assertIn("F1", before_key)
+
+        for target in (
+            "archive_existing_backup",
+            "atomic_write_json",
+            "prune_profile_backups",
+        ):
+            with self.subTest(target=target):
+                changed = _profile(
+                    key_mappings=[{"hotkey": "F7", "coord": "7,7", "enabled": False}]
+                )
+                caller_profiles = {"A": changed, "B": dict(changed)}
+                before_memory = copy.deepcopy(caller_profiles)
+                with mock.patch.object(
+                    config_store, target, side_effect=OSError("磁盘已满")
+                ), self.assertRaises(OSError):
+                    persist_profiles(
+                        self.settings,
+                        self.backup,
+                        caller_profiles,
+                        "A",
+                        backup_count=2,
+                    )
+
+                self.assertEqual(
+                    self.settings.value(GLOBAL_MAPPING_KEY, ""),
+                    before_key,
+                    f"{target} 失败后全局键被改写",
+                )
+                record, error = _load_settings_record(self.settings)
+                self.assertEqual(error, "")
+                self.assertEqual(
+                    [item["hotkey"] for item in record.profiles["A"]["key_mappings"]],
+                    ["F1"],
+                    f"{target} 失败后 profiles 被改写",
+                )
+                # 内存映射：全局化覆盖只发生在 migrate_profiles 的深拷贝上，
+                # 被拒绝的保存不得就地改写调用方传入的方案对象。
+                self.assertEqual(
+                    caller_profiles,
+                    before_memory,
+                    f"{target} 失败后调用方传入的方案被就地改写",
+                )
+
     def test_invalid_global_key_is_ignored_and_repaired(self):
         """FR-20261021-003：损坏的全局键不得扩散到所有方案。"""
         good = _profile(key_mappings=[{"hotkey": "F2", "coord": "2,2", "enabled": False}])

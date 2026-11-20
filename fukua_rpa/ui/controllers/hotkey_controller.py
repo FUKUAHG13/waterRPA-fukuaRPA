@@ -344,11 +344,9 @@ class HotkeyController:
             parsed = parse_hotkey_text(text)
             if not parsed:
                 continue
-            if not is_safe_global_hotkey(parsed):
-                write_log(f"连点器热键 {text} 不适合全局启停，已跳过。",
-                             category=LOG_APPLICATION,
-                         )
-                continue
+            # 连点器启停允许裸单键：这是用户主动录入的启停键，不是打字误触。
+            # 安全下限仍由 parse_hotkey_text 保证（拒绝 A+C 多普通键组合）。
+            # 主程序脚本热键与方案热键继续使用 is_safe_global_hotkey 拒绝裸键。
             signature = hotkey_signature(parsed)
             action_name = {"start": "启动", "stop": "停止", "toggle": "启停"}[action]
             if signature in used_hotkeys:

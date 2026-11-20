@@ -3,11 +3,12 @@
 
 import unicodedata
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
@@ -23,6 +24,8 @@ from ..usage_notices import (
     set_first_use_notices_enabled,
 )
 from .components import enable_work_window_controls
+
+_SEARCH_CATEGORY = "__search_results__"
 
 _GBK_PINYIN_INITIALS = (
     (-20319, "A"),
@@ -100,6 +103,29 @@ def sorted_usage_notices(category, notices=USAGE_NOTICES):
     )
 
 
+def filtered_usage_notices(keyword, notices=USAGE_NOTICES):
+    """Return notices whose title, category or body contains *keyword*.
+
+    Matching is case-insensitive and substring based; an empty keyword yields
+    an empty result so callers can decide to restore the full three-pane
+    catalog. The result keeps the same pinyin-initial ordering as the catalog,
+    so searching never changes how notices are ordered.
+    """
+    needle = str(keyword or "").strip().casefold()
+    if not needle:
+        return []
+    return sorted(
+        (
+            notice
+            for notice in notices
+            if needle in notice.title.casefold()
+            or needle in notice.category.casefold()
+            or needle in notice.body.casefold()
+        ),
+        key=lambda notice: usage_name_sort_key(notice.title),
+    )
+
+
 class UsageNoticesDialog(QDialog):
     """Browse cautions by category and title without closing between selections."""
 
@@ -115,6 +141,12 @@ class UsageNoticesDialog(QDialog):
         heading = QLabel("使用注意与兼容边界")
         heading.setProperty("role", "sectionTitle")
         layout.addWidget(heading)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索标题、分类或内容…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self.search_edit)
 
         self.splitter = QSplitter(Qt.Horizontal)
         self.category_list = QListWidget()
@@ -133,10 +165,7 @@ class UsageNoticesDialog(QDialog):
         self.splitter.splitterMoved.connect(self._persist_splitter)
         layout.addWidget(self.splitter, 1)
 
-        for category in sorted_usage_categories():
-            item = QListWidgetItem(category)
-            item.setData(Qt.UserRole, category)
-            self.category_list.addItem(item)
+        self._fill_categories()
 
         self.category_list.currentItemChanged.connect(
             self._show_category
@@ -151,12 +180,66 @@ class UsageNoticesDialog(QDialog):
         buttons.button(QDialogButtonBox.Close).clicked.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _on_search_changed(self, text):
+        """Rebuild the notice column for a keyword, or restore the catalog."""
+        keyword = str(text or "")
+        # DESIGN: 重建分类列与条目列会多次触发 currentItemChanged。用
+        # QSignalBlocker 守卫，避免在刷新过程中触发 _show_category/_show_notice
+        # 的嵌套调用（与插件中心 _filtering 守卫同一目的）。
+        guards = (
+            QSignalBlocker(self.category_list),
+            QSignalBlocker(self.notice_list),
+            QSignalBlocker(self.details),
+        )
+        try:
+            self.category_list.clear()
+            self.notice_list.clear()
+            self.details.clear()
+            if not keyword.strip():
+                self._fill_categories()
+                self.category_list.setCurrentRow(0)
+                self._show_category(self.category_list.currentItem())
+                # blocker 期间 _show_category 内的 setCurrentRow 不会发出信号，
+                # 显式显示首条正文，避免清空搜索后正文区留白。
+                if self.notice_list.count():
+                    self._show_notice(self.notice_list.item(0))
+                return
+            results = filtered_usage_notices(keyword)
+            item = QListWidgetItem("搜索结果")
+            item.setData(Qt.UserRole, _SEARCH_CATEGORY)
+            self.category_list.addItem(item)
+            self.category_list.setCurrentRow(0)
+            for notice in results:
+                entry = QListWidgetItem(f"{notice.category} · {notice.title}")
+                entry.setData(Qt.UserRole, notice.key)
+                self.notice_list.addItem(entry)
+            if self.notice_list.count():
+                self.notice_list.setCurrentRow(0)
+                self._show_notice(self.notice_list.currentItem())
+            else:
+                self.details.setPlainText("没有匹配的使用注意，请换个关键词。")
+        finally:
+            for guard in guards:
+                guard.unblock()
+
+    def _fill_categories(self):
+        for category in sorted_usage_categories():
+            item = QListWidgetItem(category)
+            item.setData(Qt.UserRole, category)
+            self.category_list.addItem(item)
+
     def _show_category(self, current, _previous=None):
-        self.notice_list.clear()
-        self.details.clear()
         if current is None:
+            self.notice_list.clear()
+            self.details.clear()
             return
         category = str(current.data(Qt.UserRole) or "")
+        if category == _SEARCH_CATEGORY:
+            # 搜索结果已由 _on_search_changed 填入条目列，分类选中态只是占位，
+            # 不能清空，否则点击该项会误删跨分类结果。
+            return
+        self.notice_list.clear()
+        self.details.clear()
         for notice in sorted_usage_notices(category):
             item = QListWidgetItem(notice.title)
             item.setData(Qt.UserRole, notice.key)

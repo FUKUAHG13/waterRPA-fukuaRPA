@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 from fukua_rpa.config_schema import default_profile_config
 from fukua_rpa.engine import RPAEngine
 from fukua_rpa.run_config import EngineRunConfig, RunConfigError
-from fukua_rpa.vision.scene_wake import make_scene_signature
+from fukua_rpa.vision.scene_wake import SceneSignature, make_scene_signature
 
 
 class SceneWakeEngineTests(unittest.TestCase):
@@ -143,6 +143,46 @@ class SceneWakeEngineTests(unittest.TestCase):
             ],
         )
         engine.probe_recognition_wake.assert_called_once_with(context)
+
+    def test_native_to_pil_backend_switch_reanchors_instead_of_waking(self):
+        # VS-20261027-05 探针：同一次等待里原生熔断改走 PIL，同一静止画面曾被读成
+        # 100% 变化并产生一次伪唤醒；现在只重建基线，真实变化仍要在下一轮被唤醒。
+        engine = self.make_engine()
+        base = Image.new("RGB", (300, 768), "white")
+        changed = base.copy()
+        ImageDraw.Draw(changed).rectangle((60, 300, 199, 499), fill="black")
+        pil_baseline = make_scene_signature(base)
+        native_width, native_height = 38, 96
+        native_anchor = SceneSignature(
+            native_width,
+            native_height,
+            bytes([255]) * (native_width * native_height),
+            "native",
+        )
+        self.assertNotEqual(
+            (native_width, native_height),
+            (pil_baseline.width, pil_baseline.height),
+        )
+        captures = [(pil_baseline,), (make_scene_signature(changed),)]
+
+        def _capture(*_a, **_k):
+            return captures.pop(0) if captures else (pil_baseline,)
+
+        engine.capture_scene_signatures = mock.Mock(side_effect=_capture)
+        engine.probe_recognition_wake = mock.Mock(return_value=None)
+
+        woke = engine.wait_adaptive_scene(
+            0.9,
+            {"search_regions": None},
+            {"mode": "fingerprint", "signatures": (native_anchor,)},
+        )
+
+        self.assertTrue(woke)
+        self.assertEqual(engine.capture_scene_signatures.call_count, 2)
+        counters = engine.performance.snapshot()["counters"]
+        self.assertEqual(counters["wake.scene_backend_reanchors"], 1)
+        self.assertEqual(counters["wake.scene_triggers"], 1)
+        engine.probe_recognition_wake.assert_called_once()
 
     def test_probe_batches_rotate_across_nonpreferred_scales(self):
         engine = self.make_engine()

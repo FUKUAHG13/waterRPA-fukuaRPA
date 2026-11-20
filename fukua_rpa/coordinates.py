@@ -436,6 +436,61 @@ def input_to_physical_rect(rect) -> tuple[int, int, int, int] | None:
     return left, top, max(1, right - left), max(1, bottom - top)
 
 
+def desktop_input_bounds() -> tuple[int, int, int, int] | None:
+    """Return the current desktop extent in input (virtualized) coordinates.
+
+    Returns:
+        ``(left, top, width, height)`` or ``None`` when the extent cannot be
+        determined (Win32 metrics unavailable). Callers must treat ``None`` as
+        "unknown" and never as "empty".
+    """
+    rect = _virtual_screen_rect()
+    if rect is None:
+        return None
+    left, top, right, bottom = rect
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    return left, top, width, height
+
+
+def clip_input_rect_to_desktop(rect) -> tuple[int, int, int, int] | None:
+    """Clip one input-space rectangle to the desktop actually present now.
+
+    VS-20261027-02: 原生 ``build_regions`` 会把每个区域裁到虚拟桌面，全部裁空时无条件
+    回退成"整块虚拟桌面"（native_core/fukua_rpa_core.cpp:1282-1318）。拔掉副屏或换分辨率后，
+    配置区域整体离屏就会静默变成全屏搜索，命中桌面任意位置的同一张图。搜索范围属于用户
+    意图，必须在 Python 侧先裁好，不能交给后端的兜底。
+
+    Args:
+        rect: Input-space ``(x, y, width, height)``.
+
+    Returns:
+        The intersected rectangle, or ``None`` when the input is empty/degenerate
+        or lies entirely outside the current desktop. When the desktop extent is
+        unknown the rectangle is returned unchanged, because "cannot measure" must
+        not be reported as "off-screen".
+    """
+    if not rect:
+        return None
+    try:
+        x, y, width, height = (int(float(value)) for value in rect)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    bounds = desktop_input_bounds()
+    if bounds is None:
+        return (x, y, width, height)
+    left = max(x, bounds[0])
+    top = max(y, bounds[1])
+    right = min(x + width, bounds[0] + bounds[2])
+    bottom = min(y + height, bounds[1] + bounds[3])
+    if right <= left or bottom <= top:
+        return None
+    return (left, top, right - left, bottom - top)
+
+
 def input_rect_to_physical_regions(rect) -> list[tuple[int, int, int, int]]:
     """Split and convert an input-space rectangle at monitor boundaries."""
 

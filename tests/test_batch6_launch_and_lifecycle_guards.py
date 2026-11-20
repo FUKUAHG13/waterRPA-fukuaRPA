@@ -280,6 +280,79 @@ class LaunchGuardTests(unittest.TestCase):
             )
 
 
+class SingleStepPluginRunRefTests(unittest.TestCase):
+    """PR-20261027-01: 单步启动必须与手动启动一样登记插件 run-ref。
+
+    设计基准 §5.6 / ARCHITECTURE.md #86：运行期间被引用的插件不得卸载或覆盖。
+    守卫本身在 ``PluginRegistry``（见 test_plugin_manifest_package 的
+    ``test_acquire_for_run_blocks_uninstall`` / ``test_registry_active_run_count_blocks_install_overwrite``），
+    本用例补的是**启动入口到该守卫的接线**：单步入口曾漏传 ``plugin_dependencies``，
+    于是 ``_launch_prepared_tasks`` 拿到空集合、``acquire_for_run`` 从未被调用。
+    """
+
+    PLUGIN_ID = "com.example.report"
+
+    def _controller(self):
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        from fukua_rpa.config_schema import default_profile_config
+        from fukua_rpa.engine import RPAEngine
+        from fukua_rpa.plugin_registry import PluginRegistry
+        from fukua_rpa.ui.controllers.execution_controller import ExecutionController
+
+        base_dir = tempfile.mkdtemp(prefix="pr01-plugins-")
+        self.addCleanup(shutil.rmtree, base_dir, True)
+        registry = PluginRegistry(base_dir, "1.0.0")
+        host = mock.MagicMock()
+        host.plugin_registry = registry
+        host.engine = RPAEngine(defer_backends=True)
+        host.runtime_ready = True
+        host.current_profile_name = "默认方案"
+        host.run_controller.is_active = False
+        host.run_controller.start.return_value = (True, None)
+        host.feedback_controller.recognition_test_active = False
+        host.auto_clicker_is_running.return_value = False
+        host.selected_row_index.return_value = 0
+        host.workflow_review_controller.validate_tasks.return_value = None
+        host.current_log_policy.return_value = mock.MagicMock(
+            allows=mock.MagicMock(return_value=False)
+        )
+        cfg = default_profile_config()
+        cfg["tasks"] = [
+            {
+                "type": 27.0,
+                "step_id": "s0",
+                "plugin_id": self.PLUGIN_ID,
+                "plugin_action_id": "run",
+            }
+        ]
+        host.get_current_ui_config.return_value = cfg
+        controller = ExecutionController(host)
+        host.build_single_step_request.side_effect = controller.build_single_step_request
+        return controller, host, registry
+
+    def test_single_step_acquires_and_releases_the_run_ref(self):
+        controller, host, registry = self._controller()
+
+        self.assertEqual(registry.active_run_count(self.PLUGIN_ID), 0)
+        controller.run_selected_step_once()
+
+        # 运行中：run-ref 已登记，卸载守卫（reference_count）与覆盖安装守卫
+        # （active_run_count）都会拒绝。
+        self.assertTrue(host.run_controller.start.called, "本轮未真正启动运行")
+        self.assertEqual(controller._run_plugin_deps, (self.PLUGIN_ID,))
+        self.assertEqual(registry.active_run_count(self.PLUGIN_ID), 1)
+        self.assertEqual(registry.reference_count(self.PLUGIN_ID), 1)
+
+        # 运行结束（on_finish / 启动失败）走成对释放；不释放就是永久泄漏。
+        controller._release_plugin_run_refs()
+        self.assertEqual(registry.active_run_count(self.PLUGIN_ID), 0)
+        self.assertEqual(registry.reference_count(self.PLUGIN_ID), 0)
+        self.assertEqual(controller._run_plugin_deps, ())
+
+
 class CoordinatePickerLifecycleTests(unittest.TestCase):
     """FR-20261006-013: deleting a step must close its picker, and only its own."""
 
