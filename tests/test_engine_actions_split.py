@@ -54,9 +54,9 @@ class EngineActionsSplitTests(unittest.TestCase):
             self.assertIn(mixin, mro, f"{mixin} missing from MRO")
 
     def test_action_handlers_registered(self):
-        # 29 @action_handler-decorated handlers must be registered after import
-        # （29.0 = 录制输入时序，批次 2 新增）
-        self.assertEqual(len(engine_actions_module.ACTION_HANDLERS), 29)
+        # 30 @action_handler-decorated handlers must be registered after import
+        # （29.0 = 录制输入时序批次 2；30.0 = 原样回放鼠标轨迹 v1.1.16）
+        self.assertEqual(len(engine_actions_module.ACTION_HANDLERS), 30)
         self.assertEqual(
             engine_actions_module.registered_action_codes(),
             frozenset(engine_actions_module.ACTION_HANDLERS),
@@ -91,7 +91,7 @@ class EngineActionsSplitTests(unittest.TestCase):
 
         expected = {
             "ActionsSharedMixin": 9,
-            "ActionsMouseMixin": 34,
+            "ActionsMouseMixin": 35,  # v1.1.16: +_raw_click_edge（原样回放点击边）
             "ActionsKeyboardMixin": 1,
             "ActionsTextMixin": 3,
             "ActionsWindowMixin": 4,

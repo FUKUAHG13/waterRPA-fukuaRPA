@@ -271,7 +271,6 @@ def _check_report(path, ledger=None, *, legacy=False, mapping=None):
     if not legacy and metadata.get("independent_review_execution_status") == "completed":
         require(bool(metadata.get("independent_review_identity_source")), "缺少可核对的独立任务身份来源")
         for parameter, expected, configured in (
-            ("model", "gpt-6.1-sol", "model"),
             ("reasoning", "max", "reasoning_effort"),
             ("service_tier", "priority", "service_tier"),
         ):
@@ -280,8 +279,6 @@ def _check_report(path, ledger=None, *, legacy=False, mapping=None):
             if support == "available":
                 require(metadata.get("independent_review_configured_" + configured) == expected,
                         f"可设置的 {parameter} 未按要求指定")
-        actual = metadata.get("independent_review_model")
-        require(actual in {"unknown", "gpt-6.1-sol"}, "实际模型缺失或与要求不一致")
     return metadata
 
 

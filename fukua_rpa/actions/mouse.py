@@ -1552,9 +1552,43 @@ class ActionsMouseMixin:
             step_info=context.step_info,
         )
 
+    def _raw_click_edge(self, context, button: str):
+        """Dispatch a v1.1.16 raw-playback click edge (click/down/up).
+
+        ``click`` is a self-contained press-hold-release using the per-row hold
+        time; ``down``/``up`` are cross-row edges held by the segment context.
+        """
+        task = context.task or {}
+        edge = str(task.get("mouse_action", "") or "click")
+        point = self.parse_coordinate(context.value)
+        if point is None:
+            return "error"
+        x, y = point
+        if edge == "click":
+            hold_ms = task.get("click_hold_ms", "")
+            try:
+                hold = max(0.0, float(hold_ms) / 1000.0) if str(hold_ms).strip() else 0.0
+            except (TypeError, ValueError):
+                hold = 0.0
+            self.input_backend.move_to(x, y, duration=0)
+            if not self._tracked_mouse_down(button):
+                return "stopped"
+            try:
+                if hold > 0 and not self._wait_interruptibly(hold):
+                    return "stopped"
+                return "stopped" if self.check_stop_flag() else "success"
+            finally:
+                self._tracked_mouse_up(button)
+        timing = getattr(self, "_recording_timing", None)
+        if timing is None:
+            return "error"
+        return "success" if timing.on_mouse_edge(self, button, edge, x, y) else "stopped"
+
     @action_handler(1.0)
     def _execute_left_click(self, context):
         """Handle command 1.0: single left click."""
+        if str((context.task or {}).get("fidelity", "")) == "raw":
+            return self._raw_click_edge(context, "left")
         return self._click_from_context(context, 1, "left")
 
     @action_handler(2.0)
@@ -1565,6 +1599,8 @@ class ActionsMouseMixin:
     @action_handler(3.0)
     def _execute_right_click(self, context):
         """Handle command 3.0: single right click."""
+        if str((context.task or {}).get("fidelity", "")) == "raw":
+            return self._raw_click_edge(context, "right")
         return self._click_from_context(context, 1, "right")
 
     def _resolve_drag_target_image(self, context):

@@ -422,6 +422,11 @@ class JumpResolverMixin:
             )
 
         effective_task = effective_task_settings(task)
+        # v1.1.16: 被调步骤同样要处理原样回放段上下文——该路径绕过 _dispatch_step，
+        # 若不接 before_dispatch，被调的录制行会丢失单调时钟/pre_delay 保真。
+        timing = getattr(self, "_recording_timing", None)
+        if timing is not None and timing.is_raw_step(effective_task):
+            timing.before_dispatch(self, effective_task)
         policy = StepExecutionPolicy.from_task(
             effective_task,
             default_confidence=self.confidence,

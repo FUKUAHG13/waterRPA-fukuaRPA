@@ -64,11 +64,12 @@ class ConfigurationFoundationTests(unittest.TestCase):
 
     def test_command_registry_round_trips_every_persisted_command(self):
         self.assertEqual(len(command_names()), len(set(command_names())))
-        # 29.0 = 录制输入时序（批次 2）；新指令必须同时具备注册表项与 handler，
-        # 因此这里改为「连续覆盖 1..29」而不是只放到 28。
+        # 29.0 = 录制输入时序（批次 2）；30.0 = 原样回放逐条生成的鼠标轨迹
+        # （v1.1.16，tool_only）。新指令必须同时具备注册表项与 handler，
+        # 因此这里要求连续覆盖 1..30，而不是停在 29。
         self.assertEqual(
             [spec.code for spec in COMMAND_SPECS],
-            [float(i) for i in range(1, 30)],
+            [float(i) for i in range(1, 31)],
         )
         for spec in COMMAND_SPECS:
             self.assertEqual(command_name(spec.code), spec.name)

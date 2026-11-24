@@ -7,8 +7,8 @@ duplicate-key JSON rejection, required-field/string validation, per-file SHA-256
 verification, and the same-plugin-id upgrade/downgrade rule.
 
 Extraction happens into a temp dir first; only after ALL checks pass is the temp
-dir moved atomically (``os.replace``) into the final location. Any failure leaves
-no half-installed state: the temp dir is always cleaned.
+dir moved atomically into the final location. A failed upgrade restores the old
+directory when possible and retains its backup if restoration fails.
 
 Design section 5.6 additionally forbids overwriting a plugin that is currently
 running. Callers supply that run state through the ``active_run_resolver``
@@ -23,7 +23,9 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -60,6 +62,8 @@ _RESERVED_DEVICES = {
 }
 
 MANIFEST_NAME = "manifest.json"
+_INSTALL_MOVE_BACKOFF = (0.05, 0.1, 0.2)
+_WINERROR_ACCESS_DENIED = 5
 
 
 @dataclass
@@ -322,7 +326,7 @@ def _check_active_run_rule(
     """Refuse to overwrite an install that is currently executing.
 
     SAFETY: 设计 §5.6「运行中的插件不能被覆盖，更新在运行结束后生效」。
-    ``_commit_install`` replaces the whole plugin directory with ``os.replace``;
+    ``_commit_install`` replaces the whole plugin directory atomically;
     doing that while a run has the plugin loaded would swap the files out from
     under an in-flight execution.
 
@@ -357,21 +361,95 @@ def _check_active_run_rule(
         )
 
 
-def _commit_install(manifest: PluginManifest, temp_dir: str, install_base_dir: str) -> None:
-    final = os.path.join(install_base_dir, manifest.id)
-    if os.path.exists(final):
-        backup = final + ".bkp"
-        if os.path.exists(backup):
-            shutil.rmtree(backup, ignore_errors=True)
-        os.replace(final, backup)
+def _directory_identity(path: str) -> tuple[int, int] | None:
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or not info.st_ino
+        or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    ):
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _destination_is_absent(path: str) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _can_retry_move(source: str, target: str, identity: tuple[int, int]) -> bool:
+    return _destination_is_absent(target) and _directory_identity(source) == identity
+
+
+def _move_install_directory(source: str, target: str, identity: tuple[int, int]) -> None:
+    if _directory_identity(source) != identity:
+        raise PluginPackageError("安装目录的身份已变化或无法确认。")
+
+    for delay in (*_INSTALL_MOVE_BACKOFF, None):
         try:
-            os.replace(temp_dir, final)
-        except Exception:
-            os.replace(backup, final)
+            # SAFETY: Windows rename refuses any existing destination atomically,
+            # including one that appeared after the metadata check.
+            os.rename(source, target)
+            return
+        except OSError as exc:
+            if (
+                delay is None
+                or getattr(exc, "winerror", None) != _WINERROR_ACCESS_DENIED
+                or not _can_retry_move(source, target, identity)
+            ):
+                raise
+            time.sleep(delay)
+            if not _can_retry_move(source, target, identity):
+                raise
+
+
+def _remove_owned_directory(path: str, identity: tuple[int, int]) -> None:
+    if _directory_identity(path) == identity:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _commit_install(
+    manifest: PluginManifest,
+    temp_dir: str,
+    install_base_dir: str,
+    temp_identity: tuple[int, int],
+) -> None:
+    final = os.path.join(install_base_dir, manifest.id)
+    backup = final + ".bkp"
+    if not _destination_is_absent(backup):
+        raise PluginPackageError(
+            f"无法确认安装备份 {manifest.id}.bkp 不存在。请先检查并处理该备份，再重试安装。"
+        )
+
+    if _destination_is_absent(final):
+        _move_install_directory(temp_dir, final, temp_identity)
+        return
+
+    old_identity = _directory_identity(final)
+    if old_identity is None:
+        raise PluginPackageError("现有插件目录的身份无法确认，无法覆盖安装。")
+    _move_install_directory(final, backup, old_identity)
+    try:
+        _move_install_directory(temp_dir, final, temp_identity)
+    except Exception:
+        try:
+            _move_install_directory(backup, final, old_identity)
+        except Exception as exc:
+            if _directory_identity(backup) == old_identity:
+                raise PluginPackageError(
+                    f"插件更新失败，无法恢复旧版本。请保留备份 {manifest.id}.bkp。"
+                ) from exc
             raise
-        shutil.rmtree(backup, ignore_errors=True)
-    else:
-        os.replace(temp_dir, final)
+        raise
+    _remove_owned_directory(backup, old_identity)
 
 
 def install_from_file(
@@ -390,8 +468,8 @@ def install_from_file(
     files). Only after all checks pass and the upgrade/downgrade and
     active-run rules are satisfied is the temp directory moved atomically into
     place; an existing install is backed up and restored if the final move
-    fails. On ANY failure the temporary extraction directory is removed and no
-    partial install remains.
+    fails. An unsuccessful rollback leaves the old directory in its backup.
+    Failure cleanup only removes the original temporary extraction directory.
 
     An existing install whose own manifest cannot be read (corrupt JSON,
     oversized, undecodable, or unreadable) does not block the overwrite: the
@@ -428,17 +506,17 @@ def install_from_file(
     os.makedirs(install_base_dir, exist_ok=True)
 
     temp_dir = tempfile.mkdtemp(prefix="fkrplugin_", dir=install_base_dir)
+    temp_identity = _directory_identity(temp_dir)
+    if temp_identity is None:
+        raise PluginPackageError("无法确认本次安装的暂存目录身份。")
     try:
         manifest = _validate_and_extract(path, temp_dir, limits)
         _check_upgrade_rule(manifest, install_base_dir, allow_downgrade)
         _check_active_run_rule(manifest, install_base_dir, active_run_resolver)
-        _commit_install(manifest, temp_dir, install_base_dir)
+        _commit_install(manifest, temp_dir, install_base_dir, temp_identity)
         return manifest
-    except PluginManifestError:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise
     except Exception:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        _remove_owned_directory(temp_dir, temp_identity)
         raise
 
 

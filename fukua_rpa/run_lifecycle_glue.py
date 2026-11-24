@@ -161,6 +161,9 @@ class RunLifecycleMixin:
         """
         finished = self.lifecycle.finish(run_id, outcome, error)
         if finished:
+            timing = getattr(self, "_recording_timing", None)
+            if timing is not None and timing.has_segment:
+                timing.close_segment(self, reason=f"运行结束({outcome})")
             self.global_deadline = None
             self.time_limit_reached = False
             # P3-2: 运行结束回收已退出的启动型子进程，释放 Popen 引用与句柄。
@@ -204,6 +207,9 @@ class RunLifecycleMixin:
             self.debug_session.cancel()
         except Exception as exc:
             logger.warning("取消调试会话失败: %s", exc, exc_info=True)
+        timing = getattr(self, "_recording_timing", None)
+        if timing is not None and timing.has_segment:
+            timing.close_segment(self, reason="用户停止/急停")
         with self._prompt_lock:
             prompt = self._active_prompt_request
         if prompt is not None:
@@ -610,6 +616,11 @@ class RunLifecycleMixin:
 
     def _dispatch_step(self, tasks, task, index, loop_count):
         task = effective_task_settings(task)
+        # v1.1.16: 原样回放逐条步骤——在构造单步上下文之前处理录制段的单调
+        # 时钟、前置间隔等待、段边界与跨行按住状态。非录制行会在此关闭开放段。
+        timing = getattr(self, "_recording_timing", None)
+        if timing is not None:
+            timing.before_dispatch(self, task)
         policy = StepExecutionPolicy.from_task(
             task,
             default_confidence=self.confidence,
@@ -669,11 +680,18 @@ class RunLifecycleMixin:
                 True,
             )
 
-        interval_waited = self.should_wait_step_interval(
-            tasks,
-            policy.command,
-            transition.next_index,
-            loop_count,
+        # v1.1.16: 录制保真行自身已按录制时序携带前置间隔/等待，不再叠加
+        # 全局步间隔等待（settlement_wait），避免额外停顿破坏节奏。
+        is_raw_step = str(task.get("fidelity", "")) == "raw"
+        interval_waited = (
+            False
+            if is_raw_step
+            else self.should_wait_step_interval(
+                tasks,
+                policy.command,
+                transition.next_index,
+                loop_count,
+            )
         )
         if interval_waited and not self.wait_step_interval():
             return StepDispatchResult(

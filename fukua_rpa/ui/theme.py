@@ -398,7 +398,7 @@ QWidget[responsiveGroup="true"] QLabel,
 QWidget[responsiveGroup="true"] QCheckBox {
     min-height: 28px;
 }
-QTextEdit, QPlainTextEdit, QListWidget {
+QTextEdit, QPlainTextEdit, QListWidget, QTreeWidget {
     color: #172033;
     background: #FFFFFF;
     border: 1px solid #D7DCE3;
@@ -406,6 +406,17 @@ QTextEdit, QPlainTextEdit, QListWidget {
     selection-background-color: #DCEAFF;
     selection-color: #172033;
     outline: 0;
+}
+QTreeView::item, QTreeWidget::item {
+    padding: 2px 4px;
+    border-bottom: 1px solid #EEF1F5;
+}
+QHeaderView::section {
+    color: #475467;
+    background: #F8FAFC;
+    border: none;
+    border-bottom: 1px solid #D7DCE3;
+    padding: 4px 6px;
 }
 QListWidget#taskList {
     background: #F8FAFC;
@@ -786,12 +797,23 @@ QCheckBox:disabled {
 QCheckBox[emphasis="true"] {
     color: #B8D4FF;
 }
-QTextEdit, QPlainTextEdit, QListWidget {
+QTextEdit, QPlainTextEdit, QListWidget, QTreeWidget {
     color: #E6EAF0;
     background: #1B1F27;
     border-color: #3B4351;
     selection-background-color: #34547E;
     selection-color: #FFFFFF;
+}
+QTreeView::item, QTreeWidget::item {
+    border-bottom: 1px solid #2C323D;
+    padding: 2px 4px;
+}
+QHeaderView::section {
+    color: #B8C1D1;
+    background: #222733;
+    border: none;
+    border-bottom: 1px solid #3B4351;
+    padding: 4px 6px;
 }
 QListWidget#taskList, QPlainTextEdit#logView {
     color: #D6DCE6;

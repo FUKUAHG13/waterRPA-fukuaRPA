@@ -84,6 +84,25 @@ SUITES = {
         "tests.test_runtime_editing_lock_guards",
         "tests.test_scheduled_tasks_lock_guards",
         "tests.test_task_row_type_switch_preserves_params",
+        # 折叠分组后的行物化（v1.1.17）：守护 ui/task_list_mixins/virtualization.py。
+        "tests.test_collapsed_visibility_v1117",
+        # 滚动条拖动热路径与轻量摘要占位（v1.1.19）：守护锚点定位、差量物化、
+        # 占位互斥与松手补齐（ui/task_list.py 与 ui/task_list_mixins/virtualization.py）。
+        "tests.test_scroll_performance_v1119",
+        # 同版式滚动预览的共享度量与摘要拆列契约（v1.1.20）：守护
+        # ui/task_row_metrics.py 的基线 golden 几何与 scroll_preview.py 的分列逻辑。
+        "tests.test_task_row_metrics_contract",
+        # 动作类型提示（v1.1.17）：守护 ui/task_row_presentation.py 的提示表。
+        "tests.test_task_row_type_tips_v1117",
+        # 轨迹编辑的界面入口（v1.1.17/v1.1.18）：齿轮对话框、行级写回与端到端验收
+        # 同时守护 ui/task_settings_dialog.py 与 ui/trajectory_editor_widget.py；
+        # 这些源路径经 plan_impacted_tests 只命中 ("ui",)，必须在本组可达。
+        "tests.test_trajectory_settings_dialog",
+        # 轨迹采样点固定表头（v1.1.19）：守护 ui/trajectory_editor_widget.py 的
+        # 列对齐、滚动条显隐同步与常驻说明。
+        "tests.test_trajectory_header_v1119",
+        "tests.test_trajectory_row_e2e",
+        "tests.test_trajectory_acceptance_v1118",
         # FR-20261006-004（A1）：旧方案的 28.0 连点器步骤必须以**禁用占位项**
         # 往返，且不得被静默改写成下拉第一项。实测 task_row_binding.py 只选中
         # ("ui",)，故登记在本组。
@@ -228,11 +247,38 @@ SUITES = {
     "input": (
         "tests.test_advanced_image_actions",
         "tests.test_recording_model",
+        # 原样回放逐条生成（v1.1.16）：转换保真、运行期段上下文与离屏主窗口 E2E，
+        # 随录制/输入时序同组登记。
+        "tests.test_raw_playback_steps",
+        "tests.test_raw_playback_runtime",
+        "tests.test_raw_playback_ui_e2e",
+        # 原样回放移动采样模型（2026-11-20）：纯规则测试，随录制语义同组登记。
+        "tests.test_recording_sampler",
         # 录制长按采集契约（2026-10-19 批次 1）：守护源为录制钩子与录制模型，
         # 与 recording_model 同组登记。
         "tests.test_recording_hold_capture",
+        "tests.test_recording_auto_group",
+        # 录制入口统一原样回放（v1.1.19）：record_btn 直达浮层、无模式窗口、
+        # 假 Hook 完整链与拒绝场景。
+        "tests.test_recording_entry_unified_v1119",
         # 录制输入时序（2026-10-20 批次 2）：时间线转换、回放与校验。
         "tests.test_input_timeline",
+        # 原样回放采样连续性对照（2026-11-20）：原始点→保留点→派发对照，
+        # 与采样模型同属输入组。
+        "tests.test_replay_sampler_continuity",
+        # 内部事件编辑纯模型（2026-11-20）：分组、四项编辑操作与编辑后校验。
+        "tests.test_timeline_editor",
+        # 事件编辑窗口与编辑入口（2026-11-20）：离屏界面与事务写回。
+        "tests.test_timeline_editor_dialog",
+        # 鼠标轨迹编辑（v1.1.17）：采样点模型、小齿轮写回、行级 E2E 与假时钟派发。
+        # 此前新增测试未登记，test_test_impact 的“每个测试模块必须有归属”门禁恒红；
+        # 被测源 trajectory_editor.py / actions/input_timeline.py 30.0 属输入组。
+        "tests.test_trajectory_editor",
+        "tests.test_trajectory_settings_dialog",
+        "tests.test_trajectory_row_e2e",
+        "tests.test_trajectory_replay_v1117",
+        # 轨迹编辑端到端验收（v1.1.18）：真实齿轮→程序入口保存/重开→RPAEngine 派发。
+        "tests.test_trajectory_acceptance_v1118",
         # 全局映射与默认设置模板（2026-10-21）：映射不随方案走、新建沿用模板、
         # 默认映射热键不越界。
         "tests.test_global_mappings_and_defaults",
@@ -837,6 +883,10 @@ RULES = (
             # 录制已拆为数据模型 + UI 控制器两处；ui/** 规则只会带来 ui 套件，
             # 录制语义回归仍须由本规则显式触发 input/workflow。
             "fukua_rpa/recording_model.py",
+            # 原样回放的采样/转换/修饰键归一模块，录制语义同组（2026-11-20）。
+            "fukua_rpa/recording_sampler.py",
+            "fukua_rpa/recording_raw.py",
+            "fukua_rpa/recording_modifiers.py",
             "fukua_rpa/ui/controllers/recording_controller.py",
             "fukua_rpa/text_input.py",
             # 单一 SendInput INPUT ABI 模块（FR-20261016-SUP-001）：其变更与

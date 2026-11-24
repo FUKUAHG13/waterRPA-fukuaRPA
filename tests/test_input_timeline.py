@@ -625,5 +625,151 @@ class TimelinePlaybackTests(unittest.TestCase):
         self.assertEqual(events[0]["t"], 0.3)
 
 
+class SegmentedRecordingPlaybackTests(unittest.TestCase):
+    """分段录制生成的时序片段必须用假后端按序派发，且不跨段残留按住态。"""
+
+    def test_segmented_fragment_dispatches_and_releases(self):
+        from fukua_rpa.recording_model import build_recording_tasks_detailed
+
+        events = [
+            (0.0, "hotkey", "f", 0.1),
+            (1.0, "hotkey", "a", 1.4),
+            (2.0, "hotkey", "d", 2.1),
+        ]
+        raw = [
+            [0.0, "key", "f", "down"], [0.1, "key", "f", "up"],
+            [1.0, "key", "a", "down"], [1.1, "key", "a", "repeat"], [1.4, "key", "a", "up"],
+            [2.0, "key", "d", "down"], [2.1, "key", "d", "up"],
+        ]
+        tasks, info = build_recording_tasks_detailed(events, raw, include_mouse=True)
+        self.assertEqual(info["timeline_segments"], 1)
+        fragment = next(t for t in tasks if t["type"] == TASK_TYPE_INPUT_TIMELINE)
+        harness = _Harness()
+        outcome = _run(harness, fragment)
+        self.assertEqual(outcome, "success")
+        self.assertEqual(
+            list(harness.calls),
+            [("down", "a"), ("up", "a")],
+        )
+        self.assertEqual(harness._injected_keys, [], "片段结束后不得残留按住态")
+
+    def test_normalize_ceiling_does_not_silently_drop_valid_fragment(self):
+        """合法片段（远低于上限）规范化后事件数不变，不触发 slice 截断。"""
+        from fukua_rpa.constants import MAX_TIMELINE_EVENTS
+
+        events = [
+            {"t": i / 1000.0, "kind": "key", "key": "a",
+             "action": "down" if i == 0 else "up"}
+            for i in range(20)
+        ]
+        normalized = normalize_timeline_events(events)
+        self.assertLess(len(normalized), MAX_TIMELINE_EVENTS)
+        self.assertEqual(len(normalized), len(events))
+
+
+class RawPlaybackTimelineTests(unittest.TestCase):
+    """原样回放载荷的同刻顺序、负坐标与真实派发。"""
+
+    def test_equal_timestamps_dispatch_in_list_order(self):
+        events = [
+            {"t": 0.5, "kind": "move", "x": 10, "y": 10},
+            {"t": 0.5, "kind": "mouse", "button": "left", "action": "down", "x": 10, "y": 10},
+            {"t": 0.5, "kind": "key", "key": "ctrl", "action": "down"},
+            {"t": 0.5, "kind": "key", "key": "v", "action": "down"},
+            {"t": 0.5, "kind": "key", "key": "v", "action": "up"},
+            {"t": 0.5, "kind": "key", "key": "ctrl", "action": "up"},
+            {"t": 0.6, "kind": "mouse", "button": "left", "action": "up", "x": 20, "y": 20},
+        ]
+        harness = _Harness()
+        outcome = _run(harness, _timeline_task(events))
+        self.assertEqual(outcome, "success")
+        # down 前先 move_to 到按下坐标；键鼠顺序与列表一致
+        self.assertEqual(
+            [c for c in harness.calls if c[0] in ("down", "up", "mdown", "mup")],
+            [
+                ("mdown", "left"),
+                ("down", "ctrl"),
+                ("down", "v"),
+                ("up", "v"),
+                ("up", "ctrl"),
+                ("mup", "left"),
+            ],
+        )
+
+    def test_negative_secondary_monitor_coordinates_accepted(self):
+        events = [
+            {"t": 0.0, "kind": "move", "x": -1500, "y": -200},
+            {"t": 0.1, "kind": "mouse", "button": "left", "action": "down", "x": -1500, "y": -200},
+            {"t": 0.2, "kind": "mouse", "button": "left", "action": "up", "x": -1450, "y": -180},
+        ]
+        task = _timeline_task(events)
+        validator = TaskListValidator({"scale_min": "0.8", "scale_max": "1.2", "scale_step": "0.05"})
+        self.assertIsNone(validator.validate([task]))
+        harness = _Harness()
+        self.assertEqual(_run(harness, task), "success")
+        # move_to 使用负坐标（副屏），不被夹取为 0
+        moves = [c.args for c in harness.input_backend.move_to.call_args_list]
+        self.assertTrue(any(args[0] == -1500 for args in moves))
+
+    def test_raw_task_round_trip_preserves_playback_mode(self):
+        from fukua_rpa.recording_raw import build_raw_playback_task
+
+        raw = [
+            [0.0, "move", 10, 10],
+            [0.5, "key", "a", "down"],
+            [0.6, "key", "a", "up"],
+        ]
+        task = build_raw_playback_task(raw)
+        blob = json.dumps(task, ensure_ascii=False)
+        loaded = json.loads(blob)
+        self.assertEqual(loaded["playback_mode"], "raw")
+        self.assertEqual(loaded["input_events"], task["input_events"])
+        validator = TaskListValidator({"scale_min": "0.8", "scale_max": "1.2", "scale_step": "0.05"})
+        self.assertIsNone(validator.validate([loaded]))
+
+    def test_ctrl_v_replays_as_hotkey_without_clipboard_access(self):
+        # 录制侧只保存键事件，不读剪贴板；回放时按 down/up 派发。
+        events = [
+            {"t": 0.0, "kind": "key", "key": "ctrl", "action": "down"},
+            {"t": 0.05, "kind": "key", "key": "v", "action": "down"},
+            {"t": 0.1, "kind": "key", "key": "v", "action": "up"},
+            {"t": 0.15, "kind": "key", "key": "ctrl", "action": "up"},
+        ]
+        task = _timeline_task(events)
+        harness = _Harness()
+        self.assertEqual(_run(harness, task), "success")
+        self.assertEqual(
+            [c for c in harness.calls if c[0] in ("down", "up")],
+            [("down", "ctrl"), ("down", "v"), ("up", "v"), ("up", "ctrl")],
+        )
+        # 载荷中无任何剪贴板/文本内容字段
+        self.assertFalse(any("text" in e or "clip" in e for e in events))
+
+    def test_stop_releases_two_held_keys_without_premature_release(self):
+        events = [
+            {"t": 0.0, "kind": "key", "key": "ctrl", "action": "down"},
+            {"t": 0.0, "kind": "key", "key": "shift", "action": "down"},
+            {"t": 5.0, "kind": "key", "key": "ctrl", "action": "up"},
+            {"t": 5.1, "kind": "key", "key": "shift", "action": "up"},
+        ]
+        # 在两次 down 后急停 → finally 逆序释放两个键
+        harness = _Harness(stop_after_calls=2)
+        outcome = _run(harness, task=_timeline_task(events))
+        self.assertEqual(outcome, "stopped")
+        self.assertEqual(harness._injected_keys, [])
+        self.assertEqual([c for c in harness.calls if c[0] == "up"], [("up", "shift"), ("up", "ctrl")])
+
+    def test_stop_during_drag_releases_mouse_button(self):
+        events = [
+            {"t": 0.0, "kind": "mouse", "button": "left", "action": "down", "x": 10, "y": 10},
+            {"t": 0.1, "kind": "move", "x": 50, "y": 50},
+            {"t": 5.0, "kind": "mouse", "button": "left", "action": "up", "x": 50, "y": 50},
+        ]
+        harness = _Harness(stop_after_calls=1)
+        self.assertEqual(_run(harness, _timeline_task(events)), "stopped")
+        self.assertEqual(harness._injected_mouse_buttons, set())
+        self.assertIn(("mup", "left"), harness.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

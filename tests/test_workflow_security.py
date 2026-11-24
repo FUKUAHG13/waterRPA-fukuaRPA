@@ -228,6 +228,56 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertEqual(result.redacted_steps, (1,))
         self.assertTrue(result.profile["tasks"][0]["step_disabled"])
 
+    def test_privacy_sanitizer_redacts_raw_playback_step_fields(self):
+        """v1.1.16: 原样回放拆行的敏感键名/坐标/轨迹/时序必须逐字段清空并停用。"""
+        profile = default_profile_config()
+        profile["tasks"] = [
+            {
+                "type": 30.0,
+                "value": "鼠标轨迹：SECRET_TRAJECTORY",
+                "trajectory": "[[0,123,456],[10,789,101]]",
+                "hold_button": "left",
+                "fidelity": "raw",
+                "timing_group_id": "seg_SECRET",
+                "pre_delay_ms": "120",
+            },
+            {
+                "type": 7.0,
+                "value": "SECRET_KEY",
+                "key_action": "down",
+                "key_hold_duration": "0.350",
+                "fidelity": "raw",
+                "timing_group_id": "seg_SECRET",
+            },
+            {
+                "type": 6.0,
+                "value": "2",
+                "raw_delta": "240",
+                "wheel_x": "55",
+                "wheel_y": "-66",
+                "fidelity": "raw",
+                "timing_group_id": "seg_SECRET",
+            },
+        ]
+        result = sanitize_profile_for_sharing(profile)
+        serialized = json.dumps(result.profile, ensure_ascii=False)
+        self.assertNotIn("SECRET_TRAJECTORY", serialized)
+        self.assertNotIn("SECRET_KEY", serialized)
+        self.assertNotIn("seg_SECRET", serialized)
+        self.assertNotIn("123,456", serialized)
+        for idx in (0, 1, 2):
+            task = result.profile["tasks"][idx]
+            self.assertTrue(task["step_disabled"])
+            self.assertEqual(task.get("value"), "")
+            self.assertEqual(task.get("trajectory", ""), "")
+            self.assertEqual(task.get("key_action", ""), "")
+            self.assertEqual(task.get("key_hold_duration", ""), "")
+            self.assertEqual(task.get("raw_delta", ""), "")
+            self.assertEqual(task.get("wheel_x", ""), "")
+            self.assertEqual(task.get("pre_delay_ms", ""), "")
+            self.assertEqual(task.get("timing_group_id", ""), "")
+            self.assertEqual(task.get("fidelity", ""), "")
+
     def test_capability_review_counts_state_changing_actions(self):
         profile = default_profile_config()
         profile["tasks"] = [

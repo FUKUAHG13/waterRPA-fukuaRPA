@@ -47,6 +47,7 @@ __pypackages__/
 
 # Local planning, experiments, and maintainer working notes
 /.scratch/
+/docs/临时文件登记.md
 # FR-20261006-010 / DEC-20260930-002-07：AI 工作区的记忆文件属本机状态，
 # 两个路径都要覆盖——`/.workbuddy/memory/` 是已跟踪的旧路径（忽略规则对
 # 已跟踪文件不生效，须另行 `git rm --cached`），`/.workbuddy-ai/` 是当前

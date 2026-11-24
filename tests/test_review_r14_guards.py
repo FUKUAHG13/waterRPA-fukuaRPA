@@ -50,6 +50,17 @@ class SanitizeTimelineTests(unittest.TestCase):
         self.assertTrue(step.get("step_disabled"))
         self.assertEqual(step.get("input_events"), [])
 
+    def test_raw_mode_marker_and_duration_cleared(self):
+        profile = self._profile([{"kind": "key", "key": "a", "action": "down"}])
+        profile["tasks"][0]["playback_mode"] = "raw"
+        profile["tasks"][0]["recorded_duration"] = 1.25
+        result = sanitize_profile_for_sharing(profile)
+        step = result.profile["tasks"][0]
+        self.assertEqual(step.get("playback_mode"), "")
+        self.assertEqual(step.get("recorded_duration"), 0)
+        self.assertEqual(step.get("input_events"), [])
+        self.assertTrue(step.get("step_disabled"))
+
 
 class CacheNoModulesTests(unittest.TestCase):
     def test_empty_list_is_not_ok(self):

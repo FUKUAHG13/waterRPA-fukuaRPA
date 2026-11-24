@@ -17,6 +17,7 @@ from .constants import (
     TASK_TYPE_EXPRESSION,
     TASK_TYPE_INPUT_TIMELINE,
     TASK_TYPE_LAUNCH_APP,
+    TASK_TYPE_MOUSE_TRAJECTORY,
     TASK_TYPE_MULTI_IMAGE_ACTION,
     TASK_TYPE_PLUGIN_ACTION,
     TASK_TYPE_SECRET_TEXT,
@@ -233,6 +234,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(TASK_TYPE_AUTO_CLICKER, "连点器", "mouse", tool_only=True),
     # 录制时序（批次 2）：由录制自动生成，不提供手工新建入口，故 tool_only。
     CommandSpec(TASK_TYPE_INPUT_TIMELINE, "输入时序", "keyboard", tool_only=True),
+    # 原样回放逐条生成（v1.1.16）：鼠标轨迹由录制自动生成，不提供手工新建入口。
+    CommandSpec(TASK_TYPE_MOUSE_TRAJECTORY, "鼠标轨迹", "mouse", tool_only=True),
 )
 
 COMMAND_BY_CODE: dict[float, CommandSpec] = {spec.code: spec for spec in COMMAND_SPECS}

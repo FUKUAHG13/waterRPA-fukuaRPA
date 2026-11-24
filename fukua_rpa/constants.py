@@ -1,7 +1,7 @@
 """Product identity, compatibility baseline, and defensive resource limits."""
 
 PRODUCT_NAME = "fukuaRPA"
-APP_VERSION = "v1.1.4"
+APP_VERSION = "v1.1.21"
 BUILD_NAME = f"{PRODUCT_NAME}_{APP_VERSION}"
 ONEFILE_BUILD_NAME = f"{BUILD_NAME}_single"
 PROJECT_REPOSITORY_URL = "https://github.com/FUKUAHG13/waterRPA-fukuaRPA"
@@ -61,6 +61,9 @@ TASK_TYPE_PLUGIN_ACTION = 27.0
 TASK_TYPE_AUTO_CLICKER = 28.0
 # 录制时序（批次 2）：相对时间的事件流，用于还原按下/释放顺序、自动重复与多键重叠。
 TASK_TYPE_INPUT_TIMELINE = 29.0
+# 原样回放逐条生成（v1.1.16）：由原样录制生成的独立「鼠标轨迹」普通步骤。
+# code 追加在末尾，永久不复用（见 commands.py COMMAND_SPECS 的 INVARIANT）。
+TASK_TYPE_MOUSE_TRAJECTORY = 30.0
 # 输入时序步骤的事件数上限（与录制事件上限一致，防止异常数据撑爆回放）。
 MAX_TIMELINE_EVENTS = 50_000
 # 单个输入时序步骤允许的最大相对时间（秒）。与「等待」步骤的 86400 秒上限一致，

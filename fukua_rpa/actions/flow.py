@@ -606,7 +606,13 @@ class ActionsFlowMixin:
         configured_wait = self._bounded_action_duration(
             context.value, maximum=self._MAX_WAIT_DURATION_SECONDS
         )
-        wait_time = configured_wait / max(self.playback_speed, 0.1)
+        # v1.1.16: 录制段的等待行按原速回放，不受全局倍速影响（R2 已裁定）。
+        is_raw = str((context.task or {}).get("fidelity", "")) == "raw"
+        wait_time = (
+            configured_wait
+            if is_raw
+            else configured_wait / max(self.playback_speed, 0.1)
+        )
         wait_time = min(wait_time, self._MAX_WAIT_DURATION_SECONDS)
         if self.log_level >= 1:
             self.log(
@@ -626,6 +632,26 @@ class ActionsFlowMixin:
         Returns:
             Outcome string: "success" or "error".
         """
+        # v1.1.16: 原样回放的滚轮行用 raw_delta 精确派发带符号 delta，
+        # 并在带落点时先定位再滚动；不经过格数换算，避免非整格丢失精度。
+        task = context.task or {}
+        if str(task.get("fidelity", "")) == "raw" and str(task.get("raw_delta", "")).strip():
+            try:
+                delta = int(str(task["raw_delta"]).strip())
+            except (TypeError, ValueError):
+                return "error"
+            with self._input_action_lock:
+                wx = str(task.get("wheel_x", "")).strip()
+                wy = str(task.get("wheel_y", "")).strip()
+                if wx and wy:
+                    try:
+                        self.input_backend.move_to(int(wx), int(wy), duration=0)
+                    except (TypeError, ValueError):
+                        return "error"
+                if self.check_stop_flag():
+                    return "stopped"
+                self.input_backend.scroll(delta)
+            return "success"
         if self.log_level >= 1:
             self.log(f"    -> 鼠标滚轮滑动 {context.value}", LOG_ACTION)
         try:

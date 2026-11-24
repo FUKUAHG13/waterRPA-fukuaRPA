@@ -8,8 +8,11 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import unittest
 import zipfile
+from contextlib import contextmanager
+from pathlib import Path
 from unittest import mock
 
 from fukua_rpa.plugin_manifest import (
@@ -588,6 +591,242 @@ class PackageSecurityTests(unittest.TestCase):
         self.assertEqual(
             load_installed_manifest("com.example.report", self.base).version, "1.0.3"
         )
+
+
+class InstallDirectoryCommitTests(unittest.TestCase):
+    _ID = "com.example.report"
+
+    def setUp(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.root = Path(workspace.name)
+        self.base = self.root / "plugins"
+        self.final = self.base / self._ID
+        self.backup = self.base / f"{self._ID}.bkp"
+        self.new_package = self._package("2.0.0", b"new")
+
+    def _package(self, version, data):
+        path = self.root / f"{version}.fkrplugin"
+        contents = {"data.bin": data}
+        write_package(path, valid_manifest(version=version, files=file_entries(contents)), contents)
+        return path
+
+    def _install(self, package=None):
+        return install_from_file(str(package or self.new_package), str(self.base))
+
+    def _install_old(self):
+        self._install(self._package("1.0.0", b"old"))
+        return {path.name: path.read_bytes() for path in self.final.iterdir()}
+
+    @staticmethod
+    def _denied():
+        error = PermissionError(13, "directory move denied")
+        error.winerror = 5
+        return error
+
+    @contextmanager
+    def _intercept_moves(self, before_move, during_wait=None):
+        def intercept(original):
+            def move(source, target):
+                before_move(Path(source), Path(target))
+                return original(source, target)
+
+            return move
+
+        with (
+            mock.patch.object(os, "rename", new=intercept(os.rename)),
+            mock.patch.object(os, "replace", new=intercept(os.replace)),
+            mock.patch.object(time, "sleep", side_effect=during_wait) as waits,
+        ):
+            yield waits
+
+    def test_fresh_install_succeeds_on_last_retry(self):
+        attempts = []
+
+        def transient(source, target):
+            attempts.append((source, target))
+            if len(attempts) <= 3:
+                raise self._denied()
+
+        with self._intercept_moves(transient) as waits:
+            result = self._install()
+
+        self.assertEqual(result.version, "2.0.0")
+        self.assertEqual((self.final / "data.bin").read_bytes(), b"new")
+        self.assertEqual(waits.call_args_list, [mock.call(0.05), mock.call(0.1), mock.call(0.2)])
+        self.assertEqual(attempts, [attempts[0]] * 4)
+        self.assertEqual(list(self.base.iterdir()), [self.final])
+
+    def test_persistent_denial_keeps_original_error_and_removes_owned_staging(self):
+        original = self._denied()
+        attempts = []
+
+        def refuse(source, target):
+            attempts.append((source, target))
+            raise original
+
+        with self._intercept_moves(refuse) as waits, self.assertRaises(PermissionError) as caught:
+            self._install()
+
+        self.assertIs(caught.exception, original)
+        self.assertEqual(waits.call_args_list, [mock.call(0.05), mock.call(0.1), mock.call(0.2)])
+        self.assertEqual(attempts, [attempts[0]] * 4)
+        self.assertEqual(list(self.base.iterdir()), [])
+
+    def test_other_move_errors_do_not_wait(self):
+        def check(original):
+            attempts = []
+
+            def refuse(source, target):
+                attempts.append((source, target))
+                raise original
+
+            with self._intercept_moves(refuse) as waits, self.assertRaises(OSError) as caught:
+                self._install()
+
+            self.assertIs(caught.exception, original)
+            self.assertEqual(len(attempts), 1)
+            waits.assert_not_called()
+            self.assertEqual(list(self.base.iterdir()), [])
+
+        errors = (PermissionError(13, "denied without winerror"), FileExistsError(17, "destination exists"))
+        for original in errors:
+            with self.subTest(error=original):
+                check(original)
+
+    @unittest.skipUnless(os.name == "nt", "Windows atomic rename contract")
+    def test_retry_never_replaces_empty_destination_created_just_before_move(self):
+        attempts = []
+
+        def create_late(source, target):
+            attempts.append((source, target))
+            if len(attempts) == 1:
+                raise self._denied()
+            target.mkdir()
+
+        with self._intercept_moves(create_late) as waits, self.assertRaises(FileExistsError):
+            self._install()
+
+        waits.assert_called_once_with(0.05)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(list(self.base.iterdir()), [self.final])
+        self.assertEqual(list(self.final.iterdir()), [])
+
+    def test_occupied_or_unreadable_destination_does_not_trigger_retry(self):
+        original_lstat = os.lstat
+
+        def check(state):
+            failure = self._denied()
+            attempted = False
+
+            def refuse(source, target):
+                nonlocal attempted
+                self.assertFalse(attempted)
+                attempted = True
+                raise failure
+
+            def lstat(path, *args, **kwargs):
+                if attempted and Path(path) == self.final:
+                    if state == "unreadable":
+                        raise PermissionError(13, "cannot determine target state")
+                    # An entry may be visible to lstat even when its target is absent.
+                    return original_lstat(self.new_package)
+                return original_lstat(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(os, "lstat", new=lstat),
+                self._intercept_moves(refuse) as waits,
+                self.assertRaises(PermissionError) as caught,
+            ):
+                self._install()
+
+            self.assertIs(caught.exception, failure)
+            waits.assert_not_called()
+            self.assertEqual(list(self.base.iterdir()), [])
+
+        for state in ("observed-entry", "unreadable"):
+            with self.subTest(state=state):
+                check(state)
+
+    def test_cleanup_leaves_replacement_staging_before_or_during_backoff(self):
+        move = os.rename
+
+        def check(phase):
+            replaced = self.root / phase
+            attempts = []
+
+            def replace_staging(source):
+                move(source, replaced)
+                source.mkdir()
+                (source / "keep.txt").write_bytes(b"other directory")
+
+            def refuse(source, target):
+                attempts.append((source, target))
+                if phase == "first-move":
+                    replace_staging(source)
+                raise self._denied()
+
+            def wait(_seconds):
+                replace_staging(attempts[0][0])
+
+            with self._intercept_moves(refuse, wait) as waits, self.assertRaises(PermissionError):
+                self._install()
+
+            expected_waits = [mock.call(0.05)] if phase == "backoff" else []
+            self.assertEqual(waits.call_args_list, expected_waits)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual((attempts[0][0] / "keep.txt").read_bytes(), b"other directory")
+            self.assertEqual((replaced / "data.bin").read_bytes(), b"new")
+            self.assertFalse(self.final.exists())
+
+        for phase in ("first-move", "backoff"):
+            with self.subTest(phase=phase):
+                check(phase)
+
+    def test_upgrade_retries_old_move_and_rollback_and_restores_old_bytes(self):
+        old_bytes = self._install_old()
+        attempts = {"backup": 0, "stage": 0, "restore": 0}
+
+        def block_new(source, target):
+            phase = "backup" if target == self.backup else "restore" if source == self.backup else "stage"
+            attempts[phase] += 1
+            if phase == "stage" or attempts[phase] == 1:
+                raise self._denied()
+
+        with self._intercept_moves(block_new) as waits, self.assertRaises(PermissionError):
+            self._install()
+
+        self.assertEqual(attempts, {"backup": 2, "stage": 4, "restore": 2})
+        self.assertEqual(waits.call_args_list, [mock.call(n) for n in (0.05, 0.05, 0.1, 0.2, 0.05)])
+        self.assertEqual({path.name: path.read_bytes() for path in self.final.iterdir()}, old_bytes)
+        self.assertEqual(list(self.base.iterdir()), [self.final])
+
+    @unittest.skipUnless(os.name == "nt", "Windows atomic rename contract")
+    def test_failed_rollback_keeps_old_bytes_even_on_later_install(self):
+        old_bytes = self._install_old()
+
+        def obstruct(source, target):
+            if target == self.final:
+                if source == self.backup:
+                    target.mkdir()
+                    return
+                raise OSError(22, "staged move failed")
+
+        with self._intercept_moves(obstruct) as waits, self.assertRaisesRegex(PluginPackageError, r"保留备份"):
+            self._install()
+
+        waits.assert_not_called()
+        self.assertEqual(list(self.final.iterdir()), [])
+        self.assertEqual({path.name: path.read_bytes() for path in self.backup.iterdir()}, old_bytes)
+        for final_present in (True, False):
+            with self.subTest(final_present=final_present):
+                if not final_present:
+                    self.final.rmdir()
+                with self.assertRaisesRegex(PluginPackageError, r"\.bkp"):
+                    self._install()
+                self.assertEqual({path.name: path.read_bytes() for path in self.backup.iterdir()}, old_bytes)
+                self.assertEqual(self.final.exists(), final_present)
+        self.assertEqual(list(self.base.iterdir()), [self.backup])
 
 
 class ProtocolTests(unittest.TestCase):

@@ -53,6 +53,7 @@ from ..commands import (
 from ..constants import (
     CLICK_ANCHOR_RATIO,
     TASK_TYPE_LEFT_DRAG,
+    TASK_TYPE_MOUSE_TRAJECTORY,
     TASK_TYPE_MULTI_IMAGE_ACTION,
     TASK_TYPE_PLUGIN_ACTION,
     TASK_TYPE_RIGHT_DRAG,
@@ -348,6 +349,11 @@ class TaskConfigDialog(
             return False
         return command_code(self.step_type) == TASK_TYPE_PLUGIN_ACTION
 
+    def is_mouse_trajectory(self):
+        if self.batch_mode:
+            return False
+        return command_code(self.step_type) == TASK_TYPE_MOUSE_TRAJECTORY
+
     # ------------------------------------------------------------------
     # 插件动作设置入口 (design §5.4)
     # ------------------------------------------------------------------
@@ -582,6 +588,13 @@ class TaskConfigDialog(
                 self.plugin_action_section, plugin_relevant
             )
             self._refresh_plugin_action_label()
+
+        trajectory_relevant = self.is_mouse_trajectory()
+        if hasattr(self, "trajectory_section"):
+            self.trajectory_section.setVisible(trajectory_relevant)
+            _set_container_enabled_except_help(
+                self.trajectory_section, trajectory_relevant
+            )
 
         for row, capability, advanced_only in (
             (self.repeat_row, CONTROL_REPEAT, False),
@@ -899,6 +912,16 @@ class TaskConfigDialog(
                      )
 
     def accept(self):
+        # 鼠标轨迹（v1.1.17 修复 2）：保存前把采样点行控件同步回工作副本并
+        # 校验；失败时保持对话框打开、原数据不变，原因定位到采样行。
+        if self.is_mouse_trajectory():
+            controller = getattr(self, "trajectory_controller", None)
+            if controller is not None:
+                reason = controller.sync_from_rows()
+                if reason:
+                    controller.set_status(f"轨迹未保存：{reason}")
+                    return
+                controller.commit_to(self.data)
         self.close_child_tools()
         self.save_dialog_geometry()
         super().accept()

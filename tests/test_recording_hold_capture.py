@@ -191,5 +191,156 @@ class RecordingKeyHoldCaptureTests(unittest.TestCase):
         self.assertEqual(tasks[0]["key_hold_duration"], "0.400")
 
 
+class RawReplayCaptureTests(unittest.TestCase):
+    """原样回放采集：统一相对时钟、无按键移动、边界与不支持输入。"""
+
+    def _raw_handler(self, start=1000.0):
+        thread = input_tools.HookThread()
+        thread.is_active = True
+        thread.stop_event.clear()
+        thread.set_capture_mode("raw")
+        with mock.patch.object(input_tools.user32, "GetAsyncKeyState", return_value=0), \
+             mock.patch.object(input_tools.time, "monotonic", return_value=start):
+            self.assertTrue(thread.begin_recording())
+        self.assertEqual(thread.capture_mode, "raw")
+        return thread
+
+    def test_begin_recording_sets_relative_clock_origin(self):
+        thread = self._raw_handler(start=1000.0)
+        self.assertAlmostEqual(thread.recording_started, 1000.0)
+
+    def test_relative_timestamp_used_for_capture_and_end_truncation(self):
+        thread = self._raw_handler(start=1000.0)
+        # 按下 a @1000.5 → 相对 0.5；结束时补 up @1001.0 → 相对 1.0
+        with mock.patch.object(input_tools.time, "monotonic", return_value=1000.5):
+            _key_event(thread, input_tools.WM_KEYDOWN, VK_A)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=1001.0):
+            thread.truncate_pending_key_events()
+        events = list(thread.raw_input_events)
+        self.assertTrue(all(0 <= e[0] <= 2 for e in events), events)
+        self.assertAlmostEqual(events[0][0], 0.5)
+        self.assertAlmostEqual(events[-1][0], 1.0)
+
+    def test_free_move_is_captured_without_button(self):
+        thread = self._raw_handler(start=0.0)
+        for i, t in enumerate([0.01, 0.02, 0.03]):
+            with mock.patch.object(input_tools.time, "monotonic", return_value=t):
+                _mouse_event(thread, 0x0200, 100 + i, 200 + i)  # WM_MOUSEMOVE
+        moves = [e for e in thread.raw_input_events if e[1] == "move"]
+        self.assertEqual(len(moves), 3)
+        self.assertAlmostEqual(moves[0][0], 0.01)
+
+    def test_middle_button_down_up_captured(self):
+        thread = self._raw_handler(start=0.0)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _mouse_event(thread, 0x0207, 50, 60)  # WM_MBUTTONDOWN
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.2):
+            _mouse_event(thread, 0x0208, 50, 60)  # WM_MBUTTONUP
+        mids = [e for e in thread.raw_input_events if e[1] == "mouse" and e[2] == "middle"]
+        self.assertEqual([e[3] for e in mids], ["down", "up"])
+
+    def test_horizontal_wheel_marks_unsupported(self):
+        thread = self._raw_handler(start=0.0)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _mouse_event(thread, 0x020E, 50, 60, mouse_data=120 << 16)
+        self.assertTrue(thread.raw_unsupported)
+
+    def test_side_button_marks_unsupported(self):
+        thread = self._raw_handler(start=0.0)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _mouse_event(thread, 0x020B, 50, 60)  # WM_XBUTTONDOWN
+        self.assertTrue(thread.raw_unsupported)
+
+    def test_begin_rejects_when_mouse_already_held(self):
+        thread = input_tools.HookThread()
+        thread.is_active = True
+        thread.stop_event.clear()
+        thread.set_capture_mode("raw")
+        with mock.patch.object(input_tools.user32, "GetAsyncKeyState", return_value=0x8000):
+            result = thread.begin_recording()
+        self.assertEqual(result, "already-held")
+        self.assertFalse(thread.recording_event.is_set())
+
+    def test_begin_rejects_when_key_already_held(self):
+        thread = input_tools.HookThread()
+        thread.is_active = True
+        thread.stop_event.clear()
+        thread.pressed_vks.add(VK_A)
+        thread.set_capture_mode("raw")
+        with mock.patch.object(input_tools.user32, "GetAsyncKeyState", return_value=0):
+            result = thread.begin_recording()
+        self.assertEqual(result, "already-held")
+
+    def test_left_right_shift_first_down_last_up(self):
+        thread = self._raw_handler(start=0.0)
+        VK_LSHIFT, VK_RSHIFT = 0xA0, 0xA1
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _key_event(thread, input_tools.WM_KEYDOWN, VK_LSHIFT)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.2):
+            _key_event(thread, input_tools.WM_KEYDOWN, VK_RSHIFT)
+        # 松开左侧：不应产生 up（右侧仍按住）
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.3):
+            _key_event(thread, input_tools.WM_KEYUP, VK_LSHIFT)
+        keys = [e for e in thread.raw_input_events if e[1] == "key"]
+        self.assertEqual([(e[2], e[3]) for e in keys], [("shift", "down")])
+        # 松开右侧：产生 up
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.4):
+            _key_event(thread, input_tools.WM_KEYUP, VK_RSHIFT)
+        keys = [e for e in thread.raw_input_events if e[1] == "key"]
+        self.assertEqual(
+            [(e[2], e[3]) for e in keys],
+            [("shift", "down"), ("shift", "up")],
+        )
+
+    def test_left_right_shift_auto_repeat_keeps_pressed(self):
+        thread = self._raw_handler(start=0.0)
+        VK_RSHIFT = 0xA1
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _key_event(thread, input_tools.WM_KEYDOWN, VK_RSHIFT)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.2):
+            _key_event(thread, input_tools.WM_KEYDOWN, VK_RSHIFT)  # repeat
+        keys = [e for e in thread.raw_input_events if e[1] == "key"]
+        self.assertEqual([e[3] for e in keys], ["down", "repeat"])
+
+    def test_end_truncation_releases_held_physical_modifier(self):
+        # 按住物理左 shift 到结束 → 必须补一个逻辑 shift up（时间线自洽）。
+        thread = self._raw_handler(start=0.0)
+        VK_LSHIFT = 0xA0
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _key_event(thread, input_tools.WM_KEYDOWN, VK_LSHIFT)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.5):
+            thread.truncate_pending_key_events()
+        keys = [e for e in thread.raw_input_events if e[1] == "key"]
+        self.assertEqual(
+            [(e[2], e[3]) for e in keys],
+            [("shift", "down"), ("shift", "up")],
+        )
+
+    def test_end_truncation_releases_both_sides_as_single_logical_up(self):
+        # 左右 shift 同时按住到结束 → 只补一个逻辑 shift up。
+        thread = self._raw_handler(start=0.0)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.1):
+            _key_event(thread, input_tools.WM_KEYDOWN, 0xA0)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.2):
+            _key_event(thread, input_tools.WM_KEYDOWN, 0xA1)
+        with mock.patch.object(input_tools.time, "monotonic", return_value=0.6):
+            thread.truncate_pending_key_events()
+        keys = [e for e in thread.raw_input_events if e[1] == "key"]
+        ups = [e for e in keys if e[3] == "up"]
+        self.assertEqual(len(ups), 1)
+        self.assertEqual(ups[0][2], "shift")
+
+    def test_steps_mode_still_absolute_and_filters_free_move(self):
+        # 普通模式对照：无按键移动不采集、时间戳仍为绝对。
+        thread = input_tools.HookThread()
+        thread.recording_event.set()
+        thread.stop_event.clear()
+        with mock.patch.object(input_tools.time, "monotonic", return_value=500.0):
+            _mouse_event(thread, 0x0200, 10, 10)  # 无按键移动
+        self.assertEqual(
+            [e for e in thread.raw_input_events if e[1] == "move"], []
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

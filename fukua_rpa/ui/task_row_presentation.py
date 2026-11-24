@@ -109,6 +109,14 @@ TASK_TYPE_TIPS = {
         "【多图动作映射】\n按小齿轮中规则的先后顺序识别多张图片，只执行第一条命中规则绑定的动作。",
         "点小齿轮添加图片与对应动作",
     ),
+    "鼠标轨迹": (
+        "【鼠标轨迹】\n回放一组录制的鼠标移动采样点（相对时刻与坐标）。\n采样点在小齿轮中编辑，主参数区只显示点数与时长摘要。",
+        "鼠标轨迹采样点请在右侧小齿轮中编辑",
+    ),
+    "插件动作": (
+        "【插件动作】\n调用本机已安装插件的动作。\n插件和动作在小齿轮中选择与配置。",
+        "插件与动作请在右侧小齿轮中选择",
+    ),
 }
 
 
@@ -151,6 +159,10 @@ def apply_task_type_presentation(row, text):
     elif is_multi_image_action:
         show_multi_image_action_summary(row)
 
+    # DESIGN: 提示与占位始终按“当前类型”设置（v1.1.17 修复 3）。此前只在
+    # 命中 TASK_TYPE_TIPS 时覆写，导致未登记类型（含 30.0 轨迹、插件动作）
+    # 继承上一个动作的文案。is_unsupported 保持最高优先级，其后专用文案，
+    # 再后给通用提示并清空占位，绝不残留上一类型的提示。
     if is_unsupported:
         tooltip = (
             "此方案包含当前版本无法识别的动作类型。该步骤会保留原始内容，"
@@ -164,6 +176,11 @@ def apply_task_type_presentation(row, text):
         row.type_combo.setToolTip(tooltip)
         row.value_input.setToolTip(tooltip)
         row.value_input.setPlaceholderText(placeholder)
+    else:
+        generic = f"【{text}】\n当前动作的参数请在右侧小齿轮中设置。"
+        row.type_combo.setToolTip(generic)
+        row.value_input.setToolTip(generic)
+        row.value_input.setPlaceholderText("")
 
     if is_unsupported:
         row.file_btn.setVisible(False)

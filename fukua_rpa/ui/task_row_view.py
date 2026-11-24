@@ -20,6 +20,25 @@ from PySide6.QtWidgets import (
 from ..commands import command_names
 from ..paths import get_resource_path
 from .components import HistoryComboBox, HistoryLineEdit
+from .task_row_metrics import (
+    ACTION_BUTTON_WIDTH,
+    CONTROLS_MARGIN_BOTTOM,
+    CONTROLS_MARGIN_LEFT,
+    CONTROLS_MARGIN_RIGHT,
+    CONTROLS_MARGIN_TOP,
+    CONTROLS_SPACING,
+    HEADER_MARGIN_BOTTOM,
+    HEADER_MARGIN_DEPTH_STEP,
+    HEADER_MARGIN_LEFT_BASE,
+    HEADER_MARGIN_RIGHT,
+    HEADER_MARGIN_TOP,
+    HEADER_SPACING,
+    HEADER_TOGGLE_SIZE,
+    INDEX_BASE_WIDTH,
+    INDEX_PADDING,
+    MARK_SIZE,
+    TYPE_MIN_WIDTH,
+)
 
 
 class RefreshableHoverButton(QPushButton):
@@ -66,7 +85,10 @@ class StepIndexLabel(QLabel):
         text_width = self.fontMetrics().horizontalAdvance(
             f"{self._maximum_index}."
         )
-        return QSize(max(self.BASE_WIDTH, text_width + 12), hint.height())
+        # 共享度量：与 task_row_metrics.index_width 同款算法，常量取自 golden。
+        return QSize(
+            max(INDEX_BASE_WIDTH, text_width + INDEX_PADDING), hint.height()
+        )
 
     def minimumSizeHint(self):
         return self.sizeHint()
@@ -88,10 +110,16 @@ def build_task_row_view(row, delete_callback):
         header.setObjectName("taskGroupHeader")
         header.setProperty("groupDepth", depth + 1)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8 + depth * 14, 3, 8, 3)
-        header_layout.setSpacing(6)
+        header_layout.setContentsMargins(
+            HEADER_MARGIN_LEFT_BASE + depth * HEADER_MARGIN_DEPTH_STEP,
+            HEADER_MARGIN_TOP,
+            HEADER_MARGIN_RIGHT,
+            HEADER_MARGIN_BOTTOM,
+        )
+        header_layout.setSpacing(HEADER_SPACING)
         toggle = QPushButton("")
-        toggle.setFixedSize(24, 24)
+        # UI-CONVENTION: allow fixed-geometry reason=基线分组折叠按钮命中区 24x24
+        toggle.setFixedSize(HEADER_TOGGLE_SIZE, HEADER_TOGGLE_SIZE)
         toggle.setProperty("iconOnly", True)
         toggle.setProperty("variant", "ghost")
         toggle.clicked.connect(
@@ -115,8 +143,13 @@ def build_task_row_view(row, delete_callback):
     self.controls_widget = QWidget()
     self.controls_widget.setObjectName("taskControls")
     self.layout = QHBoxLayout(self.controls_widget)
-    self.layout.setContentsMargins(8, 5, 7, 5)
-    self.layout.setSpacing(6)
+    self.layout.setContentsMargins(
+        CONTROLS_MARGIN_LEFT,
+        CONTROLS_MARGIN_TOP,
+        CONTROLS_MARGIN_RIGHT,
+        CONTROLS_MARGIN_BOTTOM,
+    )
+    self.layout.setSpacing(CONTROLS_SPACING)
     self.outer_layout.addWidget(self.controls_widget)
 
     self.index_label = StepIndexLabel()
@@ -128,7 +161,8 @@ def build_task_row_view(row, delete_callback):
 
     self.manual_mark_label = QLabel("修")
     self.manual_mark_label.setObjectName("manualMark")
-    self.manual_mark_label.setFixedSize(20, 20)
+    # UI-CONVENTION: allow fixed-geometry reason=基线标记位命中区 20x20
+    self.manual_mark_label.setFixedSize(MARK_SIZE, MARK_SIZE)
     self.manual_mark_label.setAlignment(Qt.AlignCenter)
     self.manual_mark_label.setToolTip("本步骤包含坐标步进手动修正点")
     self.manual_mark_label.hide()
@@ -136,7 +170,8 @@ def build_task_row_view(row, delete_callback):
 
     self.disabled_mark_label = QLabel("停")
     self.disabled_mark_label.setObjectName("disabledMark")
-    self.disabled_mark_label.setFixedSize(20, 20)
+    # UI-CONVENTION: allow fixed-geometry reason=基线标记位命中区 20x20
+    self.disabled_mark_label.setFixedSize(MARK_SIZE, MARK_SIZE)
     self.disabled_mark_label.setAlignment(Qt.AlignCenter)
     self.disabled_mark_label.setToolTip("本步骤已暂时禁用；运行和预览时会跳过")
     self.disabled_mark_label.hide()
@@ -144,7 +179,8 @@ def build_task_row_view(row, delete_callback):
 
     self.breakpoint_mark_label = QLabel("断")
     self.breakpoint_mark_label.setObjectName("breakpointMark")
-    self.breakpoint_mark_label.setFixedSize(20, 20)
+    # UI-CONVENTION: allow fixed-geometry reason=基线标记位命中区 20x20
+    self.breakpoint_mark_label.setFixedSize(MARK_SIZE, MARK_SIZE)
     self.breakpoint_mark_label.setAlignment(Qt.AlignCenter)
     self.breakpoint_mark_label.setToolTip(
         "本步骤已设置调试断点；运行到这里会在执行前暂停"
@@ -156,7 +192,7 @@ def build_task_row_view(row, delete_callback):
     self.type_combo.addItems(
         command_names(include_advanced=self.settings_mode == "advanced")
     )
-    self.type_combo.setMinimumWidth(130)
+    self.type_combo.setMinimumWidth(TYPE_MIN_WIDTH)
     self.type_combo.currentTextChanged.connect(self.on_type_changed)
     self.type_combo.activated.connect(self.finish_type_history)
     self.type_combo.interactionStarted.connect(self.begin_type_history)
@@ -180,7 +216,8 @@ def build_task_row_view(row, delete_callback):
     self.layout.addWidget(self.note_display, 1)
 
     self.file_btn = QPushButton("图")
-    self.file_btn.setFixedWidth(30)
+    # UI-CONVENTION: allow fixed-geometry reason=基线图标按钮命中区 30px
+    self.file_btn.setFixedWidth(ACTION_BUTTON_WIDTH)
     self.file_btn.setProperty("iconOnly", True)
     self.file_btn.setProperty("variant", "ghost")
     self.file_btn.setToolTip("选择图片文件")
@@ -188,7 +225,8 @@ def build_task_row_view(row, delete_callback):
     self.layout.addWidget(self.file_btn)
 
     self.template_capture_btn = QPushButton("框")
-    self.template_capture_btn.setFixedWidth(30)
+    # UI-CONVENTION: allow fixed-geometry reason=基线图标按钮命中区 30px
+    self.template_capture_btn.setFixedWidth(ACTION_BUTTON_WIDTH)
     self.template_capture_btn.setProperty("iconOnly", True)
     self.template_capture_btn.setProperty("variant", "tonal")
     self.template_capture_btn.setToolTip(
@@ -199,7 +237,8 @@ def build_task_row_view(row, delete_callback):
     self.layout.addWidget(self.template_capture_btn)
 
     self.recognition_test_btn = QPushButton("测")
-    self.recognition_test_btn.setFixedWidth(30)
+    # UI-CONVENTION: allow fixed-geometry reason=基线图标按钮命中区 30px
+    self.recognition_test_btn.setFixedWidth(ACTION_BUTTON_WIDTH)
     self.recognition_test_btn.setProperty("iconOnly", True)
     self.recognition_test_btn.setProperty("variant", "tonal")
     self.recognition_test_btn.setToolTip(
@@ -211,7 +250,8 @@ def build_task_row_view(row, delete_callback):
     self.layout.addWidget(self.recognition_test_btn)
 
     self.pick_btn = QPushButton("取")
-    self.pick_btn.setFixedWidth(30)
+    # UI-CONVENTION: allow fixed-geometry reason=基线图标按钮命中区 30px
+    self.pick_btn.setFixedWidth(ACTION_BUTTON_WIDTH)
     self.pick_btn.setProperty("iconOnly", True)
     self.pick_btn.setProperty("variant", "tonal")
     self.pick_btn.setToolTip(
@@ -220,6 +260,13 @@ def build_task_row_view(row, delete_callback):
     self.pick_btn.clicked.connect(self.handle_pick_button)
     self.layout.addWidget(self.pick_btn)
 
+    self.timeline_edit_btn = QPushButton("展开录制")
+    self.timeline_edit_btn.setObjectName("timelineEditButton")
+    self.timeline_edit_btn.setProperty("variant", "tonal")
+    self.timeline_edit_btn.clicked.connect(self.open_timeline_recording)
+    self.timeline_edit_btn.hide()
+    self.layout.addWidget(self.timeline_edit_btn)
+
     self.cfg_btn = QPushButton("")
     settings_icon = QIcon(
         get_resource_path(os.path.join("assets", "step_settings.svg"))
@@ -227,7 +274,8 @@ def build_task_row_view(row, delete_callback):
     if settings_icon.isNull():
         settings_icon = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
     self.cfg_btn.setIcon(settings_icon)
-    self.cfg_btn.setFixedWidth(30)
+    # UI-CONVENTION: allow fixed-geometry reason=基线图标按钮命中区 30px
+    self.cfg_btn.setFixedWidth(ACTION_BUTTON_WIDTH)
     self.cfg_btn.setProperty("iconOnly", True)
     self.cfg_btn.setProperty("variant", "ghost")
     self.cfg_btn.setToolTip(
@@ -238,7 +286,8 @@ def build_task_row_view(row, delete_callback):
 
     self.del_btn = RefreshableHoverButton("")
     self.del_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
-    self.del_btn.setFixedWidth(30)
+    # UI-CONVENTION: allow fixed-geometry reason=基线图标按钮命中区 30px
+    self.del_btn.setFixedWidth(ACTION_BUTTON_WIDTH)
     self.del_btn.setProperty("iconOnly", True)
     self.del_btn.setProperty("variant", "dangerGhost")
     self.del_btn.setToolTip("删除此步骤")

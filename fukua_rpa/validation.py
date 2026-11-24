@@ -233,6 +233,13 @@ class TaskListValidator:
             )
             if error:
                 errors.append(error)
+        # v1.1.16: 原样回放逐条步骤的跨行配对/段末持有校验（逐行结构无法判定）。
+        # 「从此步运行」若切入录制段中间会遗留按下状态，一并预检拒绝。
+        try:
+            start_step = int(str(self.config.get("initial_start_step", "") or "0"))
+        except (TypeError, ValueError):
+            start_step = 0
+        errors.extend(validate_recording_segments(tasks, start_step=start_step))
         return errors
 
     def _validate_task(
@@ -1271,3 +1278,103 @@ def validate_task_list_all(
         return TaskListValidator(config).validate_all(tasks)
     except (TypeError, ValueError, OverflowError) as error:
         return [f"步骤配置格式错误：{error}"]
+
+
+def validate_recording_segments(
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    start_step: int = 0,
+) -> list[str]:
+    """Validate cross-row constraints of v1.1.16 raw playback segments.
+
+    Consecutive steps sharing a non-empty ``timing_group_id`` form one recording
+    segment. Within a segment, key/mouse ``down``/``up``/``repeat`` edges must be
+    properly paired and no input may remain held at segment end. This is a
+    whole-list pass because pairing spans rows that per-step validation cannot see.
+
+    ``start_step`` (1-based, from ``initial_start_step``) rejects a "从此步运行"
+    that cuts into a segment after its first row, which would leave down edges
+    without their pairing context.
+
+    Returns one actionable error per problem row, with the 1-based step number.
+    """
+    errors: list[str] = []
+    segments: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
+    order: list[str] = []
+    for index, task in enumerate(tasks):
+        if not isinstance(task, Mapping) or task_is_disabled(task):  # pyright: ignore[reportUnnecessaryIsInstance]
+            continue
+        if str(task.get("fidelity", "")) != "raw":
+            continue
+        sid = str(task.get("timing_group_id", "") or "")
+        if not sid:
+            continue
+        if sid not in segments:
+            segments[sid] = []
+            order.append(sid)
+        segments[sid].append((index + 1, task))
+
+    for sid in order:
+        rows = segments[sid]
+        first_no, last_no = rows[0][0], rows[-1][0]
+        if start_step > first_no and start_step <= last_no:
+            errors.append(
+                f"第 {start_step} 步：「从此步运行」落在录制段中间，"
+                f"请将起点设到本段第一步（第 {first_no} 步）或段外的无按住边界。"
+            )
+        held_keys: set[str] = set()
+        held_buttons: set[str] = set()
+        for step_no, task in rows:
+            command = task.get("type")
+            action = str(task.get("key_action", "") or "")
+            # 系统按键边（7.0）
+            if command == 7.0 and action in ("down", "up", "repeat"):
+                key = str(task.get("value", "") or "").strip().lower()
+                if not key:
+                    errors.append(f"第 {step_no} 步：录制按键动作缺少键名。")
+                    continue
+                if action == "down":
+                    if key in held_keys:
+                        errors.append(
+                            f"第 {step_no} 步：按键 {key} 重复按下（前一次尚未松开）。"
+                        )
+                    held_keys.add(key)
+                elif action == "up":
+                    if key not in held_keys:
+                        errors.append(
+                            f"第 {step_no} 步：按键 {key} 孤立松开（没有对应的按下）。"
+                        )
+                    held_keys.discard(key)
+                else:  # repeat
+                    if key not in held_keys:
+                        errors.append(
+                            f"第 {step_no} 步：按键 {key} 自动重复缺少对应的按下。"
+                        )
+            # 鼠标点击/抬起边（1.0 / 3.0，middle 无点击步骤则跳过）
+            mouse_action = str(task.get("mouse_action", "") or "")
+            if command in (1.0, 3.0) and mouse_action in ("down", "up"):
+                button = "left" if command == 1.0 else "right"
+                if mouse_action == "down":
+                    if button in held_buttons:
+                        errors.append(
+                            f"第 {step_no} 步：鼠标 {button} 键重复按下（尚未松开）。"
+                        )
+                    held_buttons.add(button)
+                else:
+                    if button not in held_buttons:
+                        errors.append(
+                            f"第 {step_no} 步：鼠标 {button} 键孤立松开（没有对应的按下）。"
+                        )
+                    held_buttons.discard(button)
+        if held_keys or held_buttons:
+            last_no = rows[-1][0]
+            held_desc = []
+            if held_keys:
+                held_desc.append("按键 " + "/".join(sorted(held_keys)))
+            if held_buttons:
+                held_desc.append("鼠标 " + "/".join(sorted(held_buttons)))
+            errors.append(
+                f"第 {last_no} 步：录制段结束时仍有未松开的输入（{'、'.join(held_desc)}），"
+                "请补齐松开步骤或把配对步骤一起复制。"
+            )
+    return errors

@@ -10,7 +10,7 @@ settings that may become relevant again. See ADR 0025.
 import logging
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
@@ -42,6 +42,7 @@ from ..workflow_metadata import normalize_step_note
 # 摘要实现已迁到无 Qt 依赖的 workflow_summary（ADR 0040）；此处重导出以保持
 # ``from fukua_rpa.ui.task_row import task_drag_summary`` 的既有调用方可用。
 from ..workflow_summary import task_drag_summary
+from .lifecycle import widget_is_alive
 from .task_row_binding import apply_task_row_data, collect_task_row_data
 from .task_row_controllers import TaskConfigDialogController, TemplateCaptureController
 from .task_row_mixins import (
@@ -68,6 +69,7 @@ class TaskRow(TaskRowConfigCapabilityMixin, TaskRowEditHistoryMixin, TaskRowPick
         self.setObjectName("taskRow")
         self.setMinimumHeight(42)
         self.parent_item = None
+        self.timeline_editor = None
         self._list_captured = False
         self._value_edit_snapshot = None
         self._value_edit_original = ""
@@ -90,6 +92,44 @@ class TaskRow(TaskRowConfigCapabilityMixin, TaskRowEditHistoryMixin, TaskRowPick
 
         build_task_row_view(self, delete_callback)
 
+    def open_timeline_recording(self):
+        item = self.parent_item
+        controller = getattr(self.window(), "workflow_editor", None)
+        if controller is not None and widget_is_alive(item) and item.listWidget() is not None:
+            controller.edit_timeline_recording(item.listWidget().row(item))
+
+    def mount_timeline_editor(self, editor):
+        self.timeline_editor = editor
+        self.timeline_edit_btn.setText("定位编辑")
+        self.outer_layout.addWidget(editor)
+        editor.setVisible(not self.controls_widget.isHidden())
+        self._update_timeline_row_height()
+
+    def detach_timeline_editor(self):
+        editor = self.timeline_editor
+        if editor is None:
+            return
+        self.timeline_editor = None
+        self.timeline_edit_btn.setText("展开录制")
+        self.outer_layout.removeWidget(editor)
+        editor.setEnabled(False)
+        editor.hide()
+        editor.deleteLater()
+        self._update_timeline_row_height()
+
+    def _update_timeline_row_height(self):
+        item = self.parent_item
+        if widget_is_alive(item):
+            hint = self.sizeHint()
+            if item.sizeHint() != hint:
+                item.setSizeHint(hint)
+
+    def event(self, event):
+        handled = super().event(event)
+        if event.type() == QEvent.LayoutRequest and getattr(self, "timeline_editor", None) is not None:
+            self._update_timeline_row_height()
+        return handled
+
     def set_runtime_editing_enabled(self, enabled):
         controls = [
             self.type_combo,
@@ -98,6 +138,7 @@ class TaskRow(TaskRowConfigCapabilityMixin, TaskRowEditHistoryMixin, TaskRowPick
             self.template_capture_btn,
             self.recognition_test_btn,
             self.pick_btn,
+            self.timeline_edit_btn,
             self.cfg_btn,
             self.del_btn,
             *getattr(self, "group_toggle_buttons", ()),
@@ -106,6 +147,8 @@ class TaskRow(TaskRowConfigCapabilityMixin, TaskRowEditHistoryMixin, TaskRowPick
         # 否则用户仍可在运行期间改写步骤备注（见 docs/设计基准.md 运行时编辑锁）。
         if getattr(self, "note_display", None) is not None:
             controls.append(self.note_display)
+        if self.timeline_editor is not None:
+            controls.append(self.timeline_editor)
         enabled = bool(enabled)
         if not enabled:
             if not hasattr(self, "_runtime_control_states"):
@@ -290,6 +333,11 @@ class TaskRow(TaskRowConfigCapabilityMixin, TaskRowEditHistoryMixin, TaskRowPick
             self.pick_btn.setVisible(self.is_coordinate_pickable(text))
 
         self.recognition_test_btn.setVisible(self.image_test_available())
+        events = self.custom_data.get("input_events")
+        has_recording = text == "输入时序" and isinstance(events, list) and bool(events)
+        self.timeline_edit_btn.setVisible(has_recording)
+        if not has_recording and self.timeline_editor is not None:
+            self.parent_item.listWidget().close_timeline_editor()
 
         if getattr(self, "parent_item", None):
             try:

@@ -91,6 +91,10 @@ class TaskConfigDialogController:
             "plugin_action_id",
             "plugin_schema_version",
             "plugin_config",
+            # v1.1.17 修复 2：轨迹是执行唯一来源，由对话框工作副本写入；
+            # 摘要 value 同源于轨迹数据，一并回填，二者都被本行覆盖 collect
+            # 的旧值（collect_task_settings 不读取采样点行控件）。
+            "trajectory",
             "value",
             "type",
         ):

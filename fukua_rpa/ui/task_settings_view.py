@@ -29,6 +29,7 @@ from .task_settings_view_parts import (
     build_image_target_section,
     build_plugin_action_section,
 )
+from .trajectory_editor_widget import build_trajectory_section
 
 
 def _set_container_enabled_except_help(container, enabled):
@@ -111,6 +112,7 @@ def build_task_settings_view(dialog, data):
 
     build_multi_image_section(self, data, layout)
     build_plugin_action_section(self, data, layout)
+    build_trajectory_section(self, data, layout)
 
     build_until_conditions(self, data, layout)
     build_execution_section(self, data, layout, inline_row)

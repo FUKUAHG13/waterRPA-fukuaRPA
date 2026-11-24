@@ -18,6 +18,7 @@ from .constants import (
     TASK_TYPE_EXPRESSION,
     TASK_TYPE_INPUT_TIMELINE,
     TASK_TYPE_LAUNCH_APP,
+    TASK_TYPE_MOUSE_TRAJECTORY,
     TASK_TYPE_MULTI_IMAGE_ACTION,
     TASK_TYPE_PLUGIN_ACTION,
     TASK_TYPE_POPUP_NOTIFY,
@@ -37,7 +38,37 @@ from .task_images import iter_task_image_paths
 from .task_model import TASK_DATA_DEFAULTS, config_bool, parse_coordinate_text
 
 MOUSE_ACTIONS = frozenset(
-    {1.0, 2.0, 3.0, 6.0, 8.0, 10.0, 11.0, TASK_TYPE_AUTO_CLICKER}
+    {
+        1.0,
+        2.0,
+        3.0,
+        6.0,
+        8.0,
+        10.0,
+        11.0,
+        TASK_TYPE_AUTO_CLICKER,
+        TASK_TYPE_MOUSE_TRAJECTORY,  # 30.0 原样回放鼠标轨迹
+    }
+)
+# v1.1.16 原样回放拆行后的敏感字段：键名、坐标、轨迹、时序与按住时长都属
+# 隐私内容，脱敏分享必须逐字段清空并停用受影响步骤（不能依赖"按现有口径"）。
+RAW_PLAYBACK_SENSITIVE_FIELDS = frozenset(
+    {
+        "value",
+        "key_hold_duration",
+        "recorded_duration",
+        "pre_delay_ms",
+        "timing_group_id",
+        "fidelity",
+        "raw_delta",
+        "wheel_x",
+        "wheel_y",
+        "key_action",
+        "mouse_action",
+        "click_hold_ms",
+        "trajectory",
+        "hold_button",
+    }
 )
 # 29.0 输入时序按 `input_events` 的实际内容分类（2026-10-21 裁定 ⑤）：
 # 纯键盘只计键盘、纯鼠标只计鼠标、混合各计 1；步骤总数与危险清单仍只计一次。
@@ -524,10 +555,43 @@ def sanitize_profile_for_sharing(config: Mapping[str, Any]) -> PrivacySanitizati
                 task["input_events"] = []
                 redacted = True
             if command == TASK_TYPE_INPUT_TIMELINE:
-                # 时序元数据（总时长等）同样反映用户操作节奏，一并清除（R16 ⑥）。
+                # 时序元数据（总时长、原样模式标注等）同样反映用户操作节奏，
+                # 一并清除（R16 ⑥）；步骤停用后这些字段不再参与任何执行。
                 if task.get("recorded_duration") not in (None, "", 0):
                     task["recorded_duration"] = 0
+                if task.get("playback_mode"):
+                    task["playback_mode"] = ""
+                    redacted = True
                 task["step_disabled"] = True
+        # v1.1.16 原样回放逐条步骤：敏感键鼠信息分散在普通动作行的专属字段里。
+        # 判定条件是"本行是录制保真行或携带任一录制专属字段"，不依赖具体 code
+        # （1/3/6/30 都可能携带），逐字段显式清空并停用，防止分享包残留。
+        is_raw_step = (
+            str(task.get("fidelity", "") or "") == "raw"
+            or command == TASK_TYPE_MOUSE_TRAJECTORY
+            or any(
+                str(task.get(field, "") or "") not in ("", "0", "[]", "{}")
+                for field in (
+                    "raw_delta",
+                    "wheel_x",
+                    "wheel_y",
+                    "key_action",
+                    "mouse_action",
+                    "click_hold_ms",
+                    "trajectory",
+                    "hold_button",
+                    "timing_group_id",
+                )
+            )
+        )
+        if is_raw_step:
+            for field in RAW_PLAYBACK_SENSITIVE_FIELDS:
+                if field in task:
+                    current = task[field]
+                    if current not in (None, "", 0, [], {}):
+                        redacted = True
+                    task[field] = "" if field != "recorded_duration" else 0
+            task["step_disabled"] = True
         # REVIEW-20260913-001 FR-001: 步骤级声音提醒音频路径是与全局字段同名的本机
         # 绝对路径，属隐私内容。它与图片步骤 value（456-459 行）同口径处置：置空并
         # 停用该步骤。字段本身保留在 KNOWN_TASK_FIELDS 内（避免整步剥离导致接收方

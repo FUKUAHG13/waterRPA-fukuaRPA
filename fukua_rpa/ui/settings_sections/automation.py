@@ -306,7 +306,10 @@ def _build_speed_behavior_controls(self, speed_settings_row):
     speed_settings_row.add_group(
         "播放倍速:",
         self.playback_speed,
-        HelpBtn("【播放倍速】 用于缩放录制脚本中的等待时间，> 1 为加速，< 1 为减速"),
+        HelpBtn(
+            "【播放倍速】 用于缩放脚本中普通等待与按住时间，> 1 为加速，< 1 为减速。\n"
+            "原样回放录制的步骤按原速回放，不受本设置影响。"
+        ),
     )
 
 

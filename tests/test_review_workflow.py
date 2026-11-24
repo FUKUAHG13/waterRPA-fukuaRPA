@@ -50,11 +50,9 @@ class ReviewFixture:
             "release_readiness": "not_evaluated",
             "independent_review_execution_status": "completed",
             "independent_review_identity_source": "测试自有独立任务记录",
-            "model_parameter_support": "available", "reasoning_parameter_support": "available",
+            "reasoning_parameter_support": "available",
             "service_tier_parameter_support": "unavailable",
-            "independent_review_configured_model": "gpt-6.1-sol",
             "independent_review_configured_reasoning_effort": "max",
-            "independent_review_model": "unknown",
         }
 
     def write_report(self, meta=None, path=None):
@@ -307,20 +305,33 @@ class ReviewWorkflowTests(ReviewFixture, unittest.TestCase):
         with self.assertRaisesRegex(InvalidRecord, "阻塞"):
             check_report(self.report, self.ledger)
 
-    def test_fallback_preserves_available_model_and_unknown_observation(self):
-        self.meta.update({"independent_review_execution_status": "completed",
-                          "independent_review_identity_source": "平台任务记录 task-002",
-                          "model_parameter_support": "available", "reasoning_parameter_support": "available",
-                          "service_tier_parameter_support": "unavailable",
-                          "independent_review_configured_model": "gpt-6.1-sol",
-                          "independent_review_configured_reasoning_effort": "max",
-                          "independent_review_model": "unknown"})
-        self.write_report()
-        check_report(self.report, self.ledger)
-        self.meta["independent_review_configured_model"] = "gpt-5.6-luna"
-        self.write_report()
-        with self.assertRaisesRegex(InvalidRecord, "model"):
-            check_report(self.report, self.ledger)
+    def test_completed_report_accepts_optional_model_metadata(self):
+        cases = (
+            {},
+            {"required_independent_review_model": "gpt-6.1-sol",
+             "model_parameter_support": "available",
+             "independent_review_configured_model": "gpt-6.1-sol",
+             "independent_review_model": "unknown"},
+            {"model_parameter_support": "available",
+             "independent_review_configured_model": "gpt-6.2-sol",
+             "independent_review_model": "gpt-6.2-sol"},
+            {"independent_review_model": "external-platform-reviewer"},
+        )
+        for model_metadata in cases:
+            with self.subTest(model_metadata=model_metadata):
+                report = self.write_report({**self.meta, **model_metadata})
+                check_report(report, self.ledger)
+
+    def test_completed_report_checks_available_reasoning_and_service_tier(self):
+        for overrides, parameter in (
+            ({"independent_review_configured_reasoning_effort": "low"}, "reasoning"),
+            ({"service_tier_parameter_support": "available",
+              "independent_review_configured_service_tier": "default"}, "service_tier"),
+        ):
+            with self.subTest(parameter=parameter):
+                report = self.write_report({**self.meta, **overrides})
+                with self.assertRaisesRegex(InvalidRecord, parameter):
+                    check_report(report, self.ledger)
 
     def test_test_results_require_nonzero_execution_and_real_summary(self):
         for runner, text in [("pytest", ""), ("pytest", "no tests ran in 0.01s"),

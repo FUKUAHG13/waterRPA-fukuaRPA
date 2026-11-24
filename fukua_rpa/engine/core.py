@@ -125,6 +125,10 @@ class RPAEngine(
         self._vision_lock = threading.RLock()
         self._injected_mouse_buttons = set()
         self._injected_keys = []
+        # v1.1.16: 原样回放逐条步骤的跨行时钟与按住状态（与注入状态同级）。
+        from .recording_timing import RecordingTimingContext
+
+        self._recording_timing = RecordingTimingContext()
         self._prompt_lock = threading.Lock()
         self._active_prompt_request = None
         self.auxiliary_click_scheduler = None
@@ -291,6 +295,9 @@ class RPAEngine(
             # value will see either the old or new value, never a torn read. Worst case:
             # a click thread uses a slightly stale deadline for one iteration (benign).
             self.global_deadline += paused_seconds
+        # v1.1.16: 暂停耗时同样后移录制段的单调基准，避免暂停被误计为回放间隔。
+        if paused_seconds > 0:
+            self._recording_timing.add_paused_seconds(paused_seconds)
         return debug_allowed
 
 

@@ -31,6 +31,33 @@ class ActionsKeyboardMixin:
         Returns:
             Outcome string: "success", "stopped", or "error".
         """
+        # v1.1.16: 原样回放拆出的按键边（down/repeat/up）由段上下文跨行持有，
+        # 不在本步内自行松开。tap 边沿用下面的普通 hotkey 语义（含按住时长）。
+        task = context.task or {}
+        if str(task.get("fidelity", "")) == "raw":
+            edge = str(task.get("key_action", "") or "tap")
+            key = str(context.value).strip().lower()
+            if edge == "tap":
+                # 与下方普通路径等价，但按住时长来自本行字段（秒）。
+                hold = task.get("key_hold_duration", "")
+                try:
+                    hold = float(hold) if str(hold).strip() else 0.0
+                except (TypeError, ValueError):
+                    hold = 0.0
+                if not key:
+                    return "error"
+                if not self._tracked_key_down(key):
+                    return "stopped"
+                try:
+                    if hold > 0 and not self._wait_interruptibly(hold):
+                        return "stopped"
+                    return "stopped" if self.check_stop_flag() else "success"
+                finally:
+                    self._tracked_key_up(key)
+            timing = getattr(self, "_recording_timing", None)
+            if timing is None:
+                return "error"
+            return "success" if timing.on_key_edge(self, key, edge) else "stopped"
         if self.log_level >= 1:
             self.log(f"    -> 触发系统按键组合: {context.value}", LOG_ACTION)
         keys = [key.strip() for key in str(context.value).lower().split("+") if key.strip()]

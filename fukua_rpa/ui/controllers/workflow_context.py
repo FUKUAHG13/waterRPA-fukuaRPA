@@ -37,7 +37,11 @@ from ...workflow_metadata import (
     repair_discontiguous_group_paths,
 )
 from ...workflow_summary import task_drag_summary
-from ..lifecycle import is_runtime_editing_locked
+from ..lifecycle import is_runtime_editing_locked, widget_is_alive
+from .workflow_timeline_edit import edit_timeline_recording as _edit_timeline_recording
+from .workflow_timeline_edit import is_editable_timeline_task as _is_editable_timeline_task
+from .workflow_timeline_edit import is_raw_timeline_task as _is_raw_timeline_task
+from .workflow_timeline_edit import is_viewable_timeline_task as _is_viewable_timeline_task
 
 if TYPE_CHECKING:
     from .host_view import HostView
@@ -349,6 +353,20 @@ class WorkflowContextMixin:
                     widget.open_custom_config()
 
             open_action.triggered.connect(open_settings)
+            # 输入时序录制：单步编辑入口，对所有来源的 29.0 步骤一致显示；
+            # 结构非法但可查看的数据也显示入口，控制器会拒绝写回并给出原因。
+            timeline_task = self._task_data_at(rows[0]) or {}
+            if self.is_viewable_timeline_task(timeline_task):
+                edit_recording_action = menu.addAction("编辑录制")
+                edit_recording_action.setEnabled(not locked)
+
+                target = task_list.item(rows[0])
+
+                def locate_recording(_checked=False):
+                    if widget_is_alive(target) and target.listWidget() is task_list:
+                        self.edit_timeline_recording(task_list.row(target))
+
+                edit_recording_action.triggered.connect(locate_recording)
             if (
                 not clicked_group_id
                 and self.host.current_settings_mode() == "advanced"
@@ -515,6 +533,26 @@ class WorkflowContextMixin:
         )
 
 
+
+    def is_raw_timeline_task(self, task):
+        """兼容别名：步骤是否为 raw 来源的可编辑时序。"""
+        return _is_raw_timeline_task(task)
+
+    def is_editable_timeline_task(self, task):
+        """步骤是否为所有来源共用的可编辑输入时序。"""
+        return _is_editable_timeline_task(task)
+
+    def is_viewable_timeline_task(self, task):
+        """步骤是否为可查看的输入时序（含结构非法、仅提示原因的数据）。"""
+        return _is_viewable_timeline_task(task)
+
+    def edit_timeline_recording(self, row=None):
+        """编辑录制入口：打开编辑窗口，合法编辑一次写回。"""
+        return _edit_timeline_recording(self, row)
+
+    def edit_raw_recording(self, row=None):
+        """兼容别名：原样回放录制也走通用编辑入口。"""
+        return _edit_timeline_recording(self, row)
 
     def show_task_context_menu(self, pos):
         menu = self.build_task_context_menu(pos)

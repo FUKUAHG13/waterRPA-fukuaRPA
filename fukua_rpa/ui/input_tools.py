@@ -84,10 +84,9 @@ def _scaled_arial(size, *, bold=False, weight=QFont.Normal):
         QFont.Bold if bold else weight,
     )
 from ..pyautogui_runtime import pyautogui  # noqa: E402
-from ..recording_model import (  # noqa: E402
-    MAX_RECORDED_EVENTS,
-    build_recording_tasks,
-)
+from ..recording_model import MAX_RECORDED_EVENTS  # noqa: E402
+from ..recording_modifiers import RawModifierTracker, raw_modifier_name  # noqa: E402
+from ..recording_raw import build_raw_playback_steps  # noqa: E402
 from ..win32_api import (  # noqa: E402
     HOOKPROC,
     KBDLLHOOKSTRUCT,
@@ -1150,6 +1149,27 @@ class HookThread(QThread):
         self.r_down_time = 0.0
         self.pressed_vks = set()
         self.control_pressed_vks = set()
+        # 原样回放模式：录制类型、统一相对时钟起点与辅助状态。
+        # DESIGN: 所有 raw 事件在采集时统一写入「相对录制起点」的时刻
+        # （t = now - recording_started），转换层不再二次归零，以保留
+        # F8 到首个事件之间的真实等待（计划 M1）。普通模式不启用这些字段。
+        self.capture_mode = "steps"
+        self._pending_mode = "steps"
+        self.recording_started = 0.0
+        self.raw_unsupported = False
+        self._raw_modifiers = RawModifierTracker()
+
+    def _event_time(self, now=None):
+        """Return the timestamp to stamp on a raw event.
+
+        Raw mode uses the unified relative clock; steps mode keeps the legacy
+        absolute ``time.monotonic()`` so existing conversion and tests are
+        untouched.
+        """
+        moment = time.monotonic() if now is None else float(now)
+        if self.capture_mode == "raw":
+            return max(0.0, moment - self.recording_started)
+        return moment
 
     @staticmethod
     def _install_failure(label):
@@ -1251,7 +1271,18 @@ class HookThread(QThread):
         Args:
             moment: Timestamp used for every synthesized release record.
         """
+        released_modifiers: set[str] = set()
         for vk in sorted(self._raw_key_down):
+            if self.capture_mode == "raw":
+                # 原样模式：按住的修饰键存的是物理 vk（0xA0-A5 / 0x5B/5C），
+                # VK_MAP 不含它们。归一为逻辑名并保证左右侧只补一个 up，
+                # 否则时间线以「有 down 无 up」的修饰键结尾（计划 M1/M6）。
+                modifier = raw_modifier_name(vk)
+                if modifier is not None:
+                    if modifier not in released_modifiers:
+                        self.raw_input_events.append([moment, "key", modifier, "up"])
+                        released_modifiers.add(modifier)
+                    continue
             name = VK_MAP.get(vk)
             if name:
                 self.raw_input_events.append([moment, "key", name, "up"])
@@ -1286,7 +1317,7 @@ class HookThread(QThread):
         回放结束/异常/急停释放的是本程序注入的输入，与此处互不相干。
         """
         with self.events_lock:
-            moment = time.monotonic() if now is None else float(now)
+            moment = self._event_time() if now is None else float(now)  # raw 模式统一相对基准
             for pending in self._recording_key_events.values():
                 pending[3] = moment
             self._recording_key_events.clear()
@@ -1296,9 +1327,38 @@ class HookThread(QThread):
             # 否则时间线会以未释放输入结尾而被校验拒绝，拖拽采样点也会丢失。
             self._close_open_raw_inputs(moment)
 
+    # 虚拟键码：鼠标三键。用于「开始时已按住」检测。
+    _VK_LBUTTON = 0x01
+    _VK_RBUTTON = 0x02
+    _VK_MBUTTON = 0x04
+
+    def _inputs_already_held(self):
+        """Return True when a mouse button or tracked key is already held.
+
+        Called at F8 start so a recording never begins mid-gesture. Mouse
+        buttons use GetAsyncKeyState (the raw ``_raw_mouse_down`` set only
+        tracks presses *after* recording begins). Keyboard uses the persistent
+        ``pressed_vks`` set, which the hook maintains even outside recording.
+        """
+        for vk in (self._VK_LBUTTON, self._VK_RBUTTON, self._VK_MBUTTON):
+            try:
+                if int(user32.GetAsyncKeyState(vk)) & 0x8000:
+                    return True
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return bool(self.pressed_vks)
+
+    def set_capture_mode(self, mode):
+        """Set the capture mode before recording (kept separate from begin())."""
+        self._pending_mode = "raw" if mode == "raw" else "steps"
+
     def begin_recording(self):
         if not self.is_active or self.stop_event.is_set():
             return False
+        mode = getattr(self, "_pending_mode", "steps")
+        # 原样模式：拒绝在已有按键/按钮按住时开始，避免把半途手势误当用户起点。
+        if mode == "raw" and self._inputs_already_held():
+            return "already-held"
         with self.events_lock:
             self.events.clear()
             self._recording_key_events.clear()
@@ -1311,6 +1371,12 @@ class HookThread(QThread):
             self.r_down_pos = None
             self.l_down_time = 0.0
             self.r_down_time = 0.0
+            # 原样模式状态统一重置，防止第二次录制残留（计划 M4）。
+            self.capture_mode = "raw" if mode == "raw" else "steps"
+            self.raw_unsupported = False
+            self._raw_modifiers.reset()
+            # 统一相对时钟起点：录制真正开始时取单调时钟基准。
+            self.recording_started = time.monotonic()
         self.recording_event.set()
         return True
 
@@ -1335,14 +1401,27 @@ class HookThread(QThread):
         if nCode >= 0:
             struct = ctypes.cast(lParam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
             raw_x, raw_y = int(struct.pt.x), int(struct.pt.y)
-            if wParam in (0x0201, 0x0202, 0x0204, 0x0205):
+            if wParam in (0x0201, 0x0202, 0x0204, 0x0205, 0x0207, 0x0208):
                 x, y = physical_to_input_coordinates(raw_x, raw_y)
             else:
                 x, y = raw_x, raw_y
 
-            if wParam == 0x0201: # WM_LBUTTONDOWN
+            if wParam in (0x020B, 0x020C) and self.capture_mode == "raw":
+                # WM_XBUTTONDOWN/UP：侧键不在支持范围，标记录制不完整。
+                self.raw_unsupported = True
+            if wParam == 0x0207 and self.capture_mode == "raw": # WM_MBUTTONDOWN
+                now = self._event_time()
+                with self.events_lock:
+                    self._append_raw_event([now, "mouse", "middle", "down", x, y])
+                    self._raw_mouse_down.add("middle")
+            elif wParam == 0x0208 and self.capture_mode == "raw": # WM_MBUTTONUP
+                now = self._event_time()
+                with self.events_lock:
+                    self._append_raw_event([now, "mouse", "middle", "up", x, y])
+                    self._raw_mouse_down.discard("middle")
+            elif wParam == 0x0201: # WM_LBUTTONDOWN
                 self.l_down_pos = (x, y)
-                self.l_down_time = time.monotonic()
+                self.l_down_time = self._event_time()
                 with self.events_lock:
                     self._append_raw_event(
                         [self.l_down_time, "mouse", "left", "down", x, y]
@@ -1350,23 +1429,24 @@ class HookThread(QThread):
                     self._raw_mouse_down.add("left")
             elif wParam == 0x0202: # WM_LBUTTONUP
                 if getattr(self, 'l_down_pos', None):
+                    up_time = self._event_time() if self.capture_mode == "raw" else time.monotonic()
                     dx = abs(x - self.l_down_pos[0])
                     dy = abs(y - self.l_down_pos[1])
                     if dx > _DRAG_THRESHOLD_PX or dy > _DRAG_THRESHOLD_PX:
-                        event = (self.l_down_time, 'left_drag', (*self.l_down_pos, x, y), time.monotonic())
+                        event = (self.l_down_time, 'left_drag', (*self.l_down_pos, x, y), up_time)
                     else:
-                        event = (self.l_down_time, 'left', (x, y), time.monotonic())
+                        event = (self.l_down_time, 'left', (x, y), up_time)
                     with self.events_lock:
                         self.events.append(event)
                         self._append_raw_event(
-                            [event[3], "mouse", "left", "up", x, y]
+                            [up_time, "mouse", "left", "up", x, y]
                         )
                         self._raw_mouse_down.discard("left")
                     self.l_down_pos = None
                     self._last_move_sample = None
             elif wParam == 0x0204: # WM_RBUTTONDOWN
                 self.r_down_pos = (x, y)
-                self.r_down_time = time.monotonic()
+                self.r_down_time = self._event_time()
                 with self.events_lock:
                     self._append_raw_event(
                         [self.r_down_time, "mouse", "right", "down", x, y]
@@ -1374,24 +1454,31 @@ class HookThread(QThread):
                     self._raw_mouse_down.add("right")
             elif wParam == 0x0205: # WM_RBUTTONUP
                 if getattr(self, 'r_down_pos', None):
+                    up_time = self._event_time() if self.capture_mode == "raw" else time.monotonic()
                     dx = abs(x - self.r_down_pos[0])
                     dy = abs(y - self.r_down_pos[1])
                     if dx > _DRAG_THRESHOLD_PX or dy > _DRAG_THRESHOLD_PX:
-                        event = (self.r_down_time, 'right_drag', (*self.r_down_pos, x, y), time.monotonic())
+                        event = (self.r_down_time, 'right_drag', (*self.r_down_pos, x, y), up_time)
                     else:
-                        event = (self.r_down_time, 'right', (x, y), time.monotonic())
+                        event = (self.r_down_time, 'right', (x, y), up_time)
                     with self.events_lock:
                         self.events.append(event)
                         self._append_raw_event(
-                            [event[3], "mouse", "right", "up", x, y]
+                            [up_time, "mouse", "right", "up", x, y]
                         )
                         self._raw_mouse_down.discard("right")
                     self.r_down_pos = None
                     self._last_move_sample = None
             elif wParam == 0x0200: # WM_MOUSEMOVE
-                # 只在按住鼠标键时记录（拖拽轨迹）；普通移动不入时间线。
-                if self.l_down_pos or self.r_down_pos:
-                    mx, my = physical_to_input_coordinates(raw_x, raw_y)
+                mx, my = physical_to_input_coordinates(raw_x, raw_y)
+                if self.capture_mode == "raw":
+                    # 原样模式：无按键移动也采集；时间戳统一相对基准；
+                    # 节流交给转换层的采样模型，这里只做有界入队。
+                    now = self._event_time()
+                    with self.events_lock:
+                        self._append_raw_event([now, "move", mx, my])
+                elif self.l_down_pos or self.r_down_pos:
+                    # 既有模式不变：只在按住时记录拖拽轨迹，保留原节流。
                     now = time.monotonic()
                     previous = self._last_move_sample
                     if (
@@ -1403,12 +1490,22 @@ class HookThread(QThread):
                         self._last_move_sample = (now, mx, my)
                         with self.events_lock:
                             self._append_raw_event([now, "move", mx, my])
-            elif wParam == 0x020A: # WM_MOUSEWHEEL
+            elif wParam == 0x020A: # WM_MOUSEWHEEL 纵向滚轮
                 delta = ctypes.c_short(struct.mouseData >> 16).value
-                now = time.monotonic()
-                with self.events_lock:
-                    self.events.append((now, 'scroll', delta, now))
-                    self._append_raw_event([now, "wheel", delta])
+                if self.capture_mode == "raw":
+                    now = self._event_time()
+                    # M7：记录落点，供转换层在 wheel 前注入同刻 move 定位。
+                    wx, wy = physical_to_input_coordinates(raw_x, raw_y)
+                    with self.events_lock:
+                        self._append_raw_event([now, "wheel", delta, wx, wy])
+                else:
+                    now = time.monotonic()
+                    with self.events_lock:
+                        self.events.append((now, 'scroll', delta, now))
+                        self._append_raw_event([now, "wheel", delta])
+            elif wParam == 0x020E and self.capture_mode == "raw": # WM_MOUSEHWHEEL 横向滚轮
+                # 明确不支持：标记录制不完整，用户需重新录制。
+                self.raw_unsupported = True
         return win32_hook_backend.call_next(None, nCode, wParam, lParam)
 
     def keyboard_handler(self, nCode, wParam, lParam):
@@ -1436,34 +1533,39 @@ class HookThread(QThread):
                 if self.recording_event.is_set():
                     # 一次取时刻，供原始流与语义事件共用：两者描述同一按键动作，
                     # 分别取时会让「按下时刻」出现微小漂移。
-                    now = time.monotonic()
-                    # 时间线采集：修饰键也按单键记录（VK_MAP 含 shift/ctrl/alt），
-                    # 不折叠成组合名，否则组合内各键的真实顺序会丢失。
-                    raw_name = VK_MAP.get(vk)
-                    if raw_name:
-                        with self.events_lock:
-                            self._append_raw_event(
-                                [now, "key", raw_name,
-                                 "repeat" if repeated else "down"]
-                            )
-                            if not repeated:
-                                self._raw_key_down.add(vk)
-                    if not repeated and vk not in MODIFIER_VKS:
-                        hotkey = hotkey_text_from_pressed_vks(vk, self.pressed_vks)
-                        if hotkey:
+                    now = self._event_time()
+                    if self.capture_mode == "raw":
+                        self._collect_raw_key_down(vk, repeated, now)
+                    else:
+                        # 既有模式：修饰键按 VK_MAP 单键记录；语义事件照旧。
+                        raw_name = VK_MAP.get(vk)
+                        if raw_name:
                             with self.events_lock:
-                                event = [now, 'hotkey', hotkey, now]
-                                self.events.append(event)
-                                self._recording_key_events[vk] = event
+                                self._append_raw_event(
+                                    [now, "key", raw_name,
+                                     "repeat" if repeated else "down"]
+                                )
+                                if not repeated:
+                                    self._raw_key_down.add(vk)
+                        if not repeated and vk not in MODIFIER_VKS:
+                            hotkey = hotkey_text_from_pressed_vks(vk, self.pressed_vks)
+                            if hotkey:
+                                with self.events_lock:
+                                    event = [now, 'hotkey', hotkey, now]
+                                    self.events.append(event)
+                                    self._recording_key_events[vk] = event
             elif event_type in (WM_KEYUP, WM_SYSKEYUP):
                 self.pressed_vks.discard(vk)
                 if self.recording_event.is_set():
-                    now = time.monotonic()
-                    raw_name = VK_MAP.get(vk)
-                    if raw_name:
-                        with self.events_lock:
-                            self._append_raw_event([now, "key", raw_name, "up"])
-                            self._raw_key_down.discard(vk)
+                    now = self._event_time()
+                    if self.capture_mode == "raw":
+                        self._collect_raw_key_up(vk, now)
+                    else:
+                        raw_name = VK_MAP.get(vk)
+                        if raw_name:
+                            with self.events_lock:
+                                self._append_raw_event([now, "key", raw_name, "up"])
+                                self._raw_key_down.discard(vk)
                     # DESIGN: 录制长按语义——抬起时把该键事件的 `ended` 回填为当前时刻，
                     # 使「按住多久」可被保留；缺这一步会把长按压成瞬时事件，
                     # 回放只能靠松键后的等待近似，时序与原操作不等价。
@@ -1472,6 +1574,47 @@ class HookThread(QThread):
                     if pending is not None:
                         pending[3] = now
         return win32_hook_backend.call_next(None, nCode, wParam, lParam)
+
+    def _collect_raw_key_down(self, vk, repeated, now):
+        """Raw mode key-down: modifiers use first-down/last-up semantics."""
+        if raw_modifier_name(vk) is not None:
+            # 修饰键交给跟踪器：首次 down、自动 repeat、另一侧按下返回 None。
+            tracked = self._raw_modifiers.press(vk)
+            if tracked is not None:
+                name, action = tracked
+                with self.events_lock:
+                    self._append_raw_event([now, "key", name, action])
+                    if action == "down":
+                        self._raw_key_down.add(vk)
+            return
+        name = VK_MAP.get(vk)
+        if name:
+            with self.events_lock:
+                self._append_raw_event(
+                    [now, "key", name, "repeat" if repeated else "down"]
+                )
+                if not repeated:
+                    self._raw_key_down.add(vk)
+        else:
+            # 可检测但不支持的键：标记录制不完整（F8/Esc 已在上方被吞）。
+            self.raw_unsupported = True
+
+    def _collect_raw_key_up(self, vk, now):
+        """Raw mode key-up: emit logical up only when last physical side releases."""
+        if raw_modifier_name(vk) is not None:
+            tracked = self._raw_modifiers.release(vk)
+            if tracked is not None:
+                name, action = tracked
+                if action == "up":
+                    with self.events_lock:
+                        self._append_raw_event([now, "key", name, "up"])
+            self._raw_key_down.discard(vk)
+            return
+        name = VK_MAP.get(vk)
+        if name:
+            with self.events_lock:
+                self._append_raw_event([now, "key", name, "up"])
+                self._raw_key_down.discard(vk)
 
 class RecorderUI(QWidget):
     def __init__(
@@ -1482,12 +1625,16 @@ class RecorderUI(QWidget):
         log_callback=None,
         restore_callback=None,
         hook_factory=HookThread,
+        mode="raw",
     ):
         super().__init__()
         self.main_window = main_window
         self.tasks_callback = tasks_callback
         self.log_callback = log_callback
         self.restore_callback = restore_callback
+        # v1.1.19：新录制统一原样回放。保留 mode 关键字供程序化/测试兼容，
+        # 但任何旧值（含 "steps"）都归一到 raw，不保留生成操作步骤路径。
+        self.mode = "raw"
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -1507,7 +1654,7 @@ class RecorderUI(QWidget):
         self.layout.addWidget(self.bg)
 
         inner = QVBoxLayout(self.bg)
-        self.label = QLabel("正在准备录制...\nF8 开始 | Esc 取消")
+        self.label = QLabel("正在准备录制（原样回放）\nF8 开始 | Esc 取消")
         self.label.setStyleSheet(
             f"color: white; font-size: {int(14 * _ui_scale())}px; font-weight: bold;"
         )
@@ -1518,6 +1665,10 @@ class RecorderUI(QWidget):
         self.cancelled = False
         self.result_handled = False
         self.hook_thread = hook_factory()
+        # 兼容测试用 FakeHook：仅在真实 HookThread 提供该入口时设置模式。
+        set_mode = getattr(self.hook_thread, "set_capture_mode", None)
+        if callable(set_mode):
+            set_mode(self.mode)
         self.hook_thread.finished_signal.connect(self.on_recorded)
         self.hook_thread.ready_signal.connect(self.on_hook_ready)
         self.hook_thread.control_signal.connect(self.on_control_key)
@@ -1528,7 +1679,7 @@ class RecorderUI(QWidget):
         if self.cancelled or self.result_handled:
             return
         if success:
-            self.label.setText("准备录制\nF8 开始 | Esc 取消")
+            self.label.setText("准备录制（原样回放）\nF8 开始 | Esc 取消")
             return
         self.state = 3
         self.result_handled = True
@@ -1552,7 +1703,17 @@ class RecorderUI(QWidget):
                 self.stop_recording()
 
     def start_recording(self):
-        if not self.hook_thread or not self.hook_thread.begin_recording():
+        if not self.hook_thread:
+            self.label.setText("录制器尚未准备好，请稍候再按 F8")
+            return False
+        started = self.hook_thread.begin_recording()
+        if started == "already-held":
+            # 原样模式：已有键/按钮按住时拒绝开始，保持待机。
+            self.label.setText(
+                "检测到已有按键或鼠标按钮按住\n请松开后重新按 F8 开始录制"
+            )
+            return False
+        if not started:
             self.label.setText("录制器尚未准备好，请稍候再按 F8")
             return False
         self.cancelled = False
@@ -1586,21 +1747,37 @@ class RecorderUI(QWidget):
         if self.cancelled or self.result_handled:
             return
         self.result_handled = True
-        double_click_seconds = max(0.1, user32.GetDoubleClickTime() / 1000.0)
-        # 批次 2：原始事件流存在时优先判定是否需要用时间线表达时序
-        # （自动重复 / 多键重叠）；否则沿用逐动作步骤，保持简单录制可读。
         raw_events = list(getattr(self.hook_thread, "raw_input_events", ()) or ())
-        if getattr(self.hook_thread, "raw_events_truncated", False):
+        truncated = getattr(self.hook_thread, "raw_events_truncated", False)
+        unsupported = getattr(self.hook_thread, "raw_unsupported", False)
+
+        # v1.1.19：新录制统一原样回放，生成一组可编辑的原速步骤。旧的单条 29.0
+        # 路径（build_raw_playback_task）与分段转换（build_recording_tasks_detailed）
+        # 保留在 recording_model / recording_raw 中供旧方案加载与既有测试使用，
+        # 但不再由新录制产生。
+        # 超限或录到不支持输入时安全结束，本次结果不进入方案。
+        if truncated:
             self.append_recording_log(
-                "操作录制：事件数达到上限，时间线已截断（末尾部分未记录）。"
+                "原样回放录制：事件数达到上限，本次录制不完整，未生成步骤，请重新录制。"
             )
-        tasks = build_recording_tasks(
-            events,
-            raw_events,
-            double_click_seconds=double_click_seconds,
-            # 批次 3：鼠标与键鼠重叠也参与时间线判定（C3/C5）。
-            include_mouse=True,
-        )
+            self.restore_main_window()
+            self.close()
+            return
+        if unsupported:
+            self.append_recording_log(
+                "原样回放录制：录到不支持的输入（侧键、横向滚轮或未支持按键），"
+                "录制不完整，未生成步骤，请重新录制。"
+            )
+            self.restore_main_window()
+            self.close()
+            return
+        tasks = build_raw_playback_steps(raw_events) or []
+        if raw_events and not tasks:
+            # 有效录制却无法完整表达（超限/非法坐标/超步骤预算）：安全拒绝。
+            self.append_recording_log(
+                "原样回放录制：本次录制无法完整转换为可编辑步骤，"
+                "未生成步骤，请缩短录制或重新录制。"
+            )
 
         added_count = None
         if callable(self.tasks_callback):
@@ -1616,15 +1793,20 @@ class RecorderUI(QWidget):
         if tasks:
             if added_count == 0:
                 # FR-901-002: 运行期编辑锁会把录制结果静默丢弃（add_rows 返回 0）。
-                # 必须明确告知用户，不能继续显示"已生成 N 步指令"造成误导。
+                # 必须明确告知用户，不能继续显示"已生成 N 步"造成误导。
                 self.append_recording_log(
                     "操作录制完成：正在运行脚本，本次录制结果未加入步骤列表，"
                     "请停止运行后重新录制。"
                 )
             else:
-                self.append_recording_log(f"操作录制完成：已生成 {len(tasks)} 步指令。")
+                # 成功提示用实际提交步数；added_count 非 int 的兼容桩路径回退到
+                # 本批长度。新录制统一原样回放，不再硬编码 1 个。
+                committed = added_count if isinstance(added_count, int) else len(tasks)
+                self.append_recording_log(
+                    f"原样回放录制完成：已生成 {committed} 个可编辑操作步骤。"
+                )
         else:
-            self.append_recording_log("操作录制完成：未录制到任何动作。")
+            self.append_recording_log("原样回放录制完成：未录制到任何动作，未生成步骤。")
 
         self.restore_main_window()
         self.close()

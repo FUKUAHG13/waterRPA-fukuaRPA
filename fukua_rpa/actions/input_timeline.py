@@ -15,7 +15,9 @@ from fukua_rpa.constants import (
     MAX_TIMELINE_EVENT_SECONDS,
     MAX_TIMELINE_EVENTS,
     TASK_TYPE_INPUT_TIMELINE,
+    TASK_TYPE_MOUSE_TRAJECTORY,
 )
+from fukua_rpa.json_safety import loads_bounded_json
 from fukua_rpa.log_policy import LOG_ACTION
 
 from .shared import action_handler
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _KEY_ACTIONS = frozenset({"down", "up", "repeat"})
 _MOUSE_ACTIONS = frozenset({"down", "up"})
+# 轨迹 JSON 字节上限：需容纳 MAX_TIMELINE_EVENTS 个点（每点含相对毫秒与两个
+# 坐标，最坏约 24 字节），留足余量避免合法长录制被误拒。
+MAX_TRAJECTORY_JSON_BYTES = 4 * 1024 * 1024
 
 
 def _point(item):
@@ -114,6 +119,9 @@ def normalize_timeline_events(raw_events: object) -> list[dict]:
         else:
             dropped += 1
             continue
+    # INVARIANT: 必须稳定排序。同一时间戳的事件按采集列表原顺序派发——
+    # 原样回放会在同一个 t 上注入 move 后再 down/wheel，顺序颠倒会让按下
+    # 落在错误坐标。Python 的 sort 稳定，这里不改用会打乱同刻顺序的 key。
     events.sort(key=lambda event: event["t"])
     if dropped:
         # 不静默：被丢弃的事件会改变时序，必须可观察（运行日志，隐私规则内只记条数）。
@@ -237,3 +245,49 @@ class ActionsInputTimelineMixin:
                     self._tracked_key_up(key)
                 except Exception:  # noqa: BLE001
                     logger.debug("输入时序清理按键失败: %s", key, exc_info=True)
+
+    @action_handler(TASK_TYPE_MOUSE_TRAJECTORY)
+    def _execute_mouse_trajectory(self, context):
+        """Replay one sampled mouse trajectory row (v1.1.16 raw steps).
+
+        ``trajectory`` is a JSON array of ``[relative_ms, x, y]`` points. Row
+        start timing was already applied by ``RecordingTimingContext.before_dispatch``;
+        here we spread points across their intra-row relative times on the same
+        monotonic clock, with interruptible waits and bounded input parsing.
+        """
+        task = context.task or {}
+        raw = str(task.get("trajectory", "") or "")
+        if not raw:
+            return "error"
+        try:
+            points = loads_bounded_json(
+                raw, max_bytes=MAX_TRAJECTORY_JSON_BYTES, label="鼠标轨迹"
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("鼠标轨迹解析失败", exc_info=True)
+            return "error"
+        if not isinstance(points, list) or not points or len(points) > MAX_TIMELINE_EVENTS:
+            return "error"
+        normalized: list[tuple[int, int, int]] = []
+        for item in points:
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                return "error"
+            try:
+                t_ms = int(item[0])
+                x, y = int(item[1]), int(item[2])
+            except (TypeError, ValueError):
+                return "error"
+            if t_ms < 0 or t_ms > MAX_TIMELINE_EVENT_SECONDS * 1000:
+                return "error"
+            if abs(x) > MAX_TIMELINE_COORDINATE or abs(y) > MAX_TIMELINE_COORDINATE:
+                return "error"
+            normalized.append((t_ms, x, y))
+        started = time.monotonic()
+        for t_ms, x, y in normalized:
+            remaining = t_ms / 1000.0 - (time.monotonic() - started)
+            if remaining > 0 and not self._wait_interruptibly(remaining):
+                return "stopped"
+            if self.check_stop_flag():
+                return "stopped"
+            self.input_backend.move_to(x, y, duration=0)
+        return "stopped" if self.check_stop_flag() else "success"

@@ -3,7 +3,7 @@
 
 import contextlib
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, QPointF, QRect, Qt, QTimer
+from PySide6.QtCore import QEvent, QItemSelectionModel, QPersistentModelIndex, QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from .lifecycle import is_runtime_editing_locked
 from .task_list_mixins import DragGestureMixin, VirtualizationMixin
+from .task_list_mixins.scroll_preview import StepRowPreviewDelegate
 
 
 class DropIndicatorOverlay(QWidget):
@@ -126,6 +127,10 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # v1.1.20：滚动期同版式预览委托。只对未物化空行绘制，已有控件的行
+        # 仍由 itemWidget 覆盖；委托只读、无定时器，随本列表销毁。
+        self._preview_delegate = StepRowPreviewDelegate(self)
+        self.setItemDelegate(self._preview_delegate)
         self.setDragDropMode(QAbstractItemView.DragOnly)
         self.setDefaultDropAction(Qt.MoveAction)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -142,6 +147,17 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
         self._drop_indicator_key = None
         self._virtual_refreshing = False
         self._last_target_materialized = set()
+        # DESIGN（v1.1.19）：滚动条滑块拖动期用轻量摘要占位替代同步新建完整
+        # TaskRow；按下时冻结目标集合保证快速往返可复用，松开后按最终视口补齐。
+        # 与手动拖拽占位 _drag_placeholder_items 互斥，避免两套 item.setText 交叉覆盖。
+        self._slider_dragging = False
+        self._scroll_placeholder_items = []  # [(row, item, original_text), ...] 仅记录本列表安装的占位
+        # 拖动期冻结语义复用 _last_target_materialized（按下后不推进，松手重算），
+        # 不另立集合，避免两套快照不一致。
+        # 有界计数器：仅供测试/基准读取，不参与业务判断。
+        self._virtual_geometry_queries = 0
+        self._virtual_item_accesses = 0
+        self._timeline_editor_index = QPersistentModelIndex()
         self._drag_placeholder_items = []
         self._drag_active = False
         self._drag_source_row = None
@@ -165,6 +181,11 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
         self._virtual_refresh_timer = QTimer(self)
         self._virtual_refresh_timer.setSingleShot(True)
         self._virtual_refresh_timer.timeout.connect(self.refresh_virtual_widgets)
+        # v1.1.19：松手补齐定时器（等滚动范围重算稳定后执行），作为成员持有
+        # 以避免单次回调被回收；随宿主销毁自动停止。
+        self._virtual_release_timer = QTimer(self)
+        self._virtual_release_timer.setSingleShot(True)
+        self._virtual_release_timer.timeout.connect(self._deferred_complete_release)
         # DESIGN: incremental materialized-row counter.  Updated in
         # refresh_virtual_widgets (+1 per restore, -1 per removeItemWidget)
         # so materialized_row_count() is O(1) during continuous scrolling.
@@ -185,9 +206,50 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
         self.verticalScrollBar().valueChanged.connect(
             lambda _value: self.schedule_virtual_refresh()
         )
+        # v1.1.19：滑块按下/移动/释放驱动轻量摘要占位与松手补齐。
+        scroll_bar = self.verticalScrollBar()
+        scroll_bar.sliderPressed.connect(self._on_slider_pressed)
+        scroll_bar.sliderMoved.connect(self._on_slider_moved)
+        scroll_bar.sliderReleased.connect(self._on_slider_released)
+        # 滚动范围重算（如松手后 max 88→87）会改变最终视口；安排一次合并刷新
+        # 按稳定后的值补齐，避免松手瞬间 value 中间态漏行。
+        scroll_bar.rangeChanged.connect(
+            lambda _min, _max: self.schedule_virtual_refresh()
+        )
+        self.model().modelAboutToBeReset.connect(self.close_timeline_editor)
+        # v1.1.20：切换方案（模型重置）时复位滚动拖动状态与预览缓存。
+        self.model().modelAboutToBeReset.connect(self._reset_scroll_preview_state)
+        self.model().rowsAboutToBeRemoved.connect(self._close_removed_timeline_editor)
 
     def selected_row_indexes(self):
         return [row for row in range(self.count()) if self.item(row).isSelected()]
+
+    def active_timeline_editor_item(self):
+        index = self._timeline_editor_index
+        return self.item(index.row()) if index.isValid() else None
+
+    def pin_timeline_editor(self, item):
+        self._timeline_editor_index = QPersistentModelIndex(self.indexFromItem(item))
+        # 展开项可能高于视口，逐像素滚动才能到达底部的应用与取消。
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.schedule_virtual_refresh()
+
+    def close_timeline_editor(self):
+        item = self.active_timeline_editor_item()
+        if item is None:
+            return
+        # 锚点可能已经换了行号，按关闭时的位置交回虚拟化回收。
+        self._last_target_materialized.add(self.row(item))
+        self._timeline_editor_index = QPersistentModelIndex()
+        widget = self.itemWidget(item)
+        if widget is not None:
+            widget.detach_timeline_editor()
+        self.resetVerticalScrollMode()
+        self.schedule_virtual_refresh()
+
+    def _close_removed_timeline_editor(self, _parent, first, last):
+        if self._timeline_editor_index.isValid() and first <= self._timeline_editor_index.row() <= last:
+            self.close_timeline_editor()
 
     def close_and_detach_row_widget(self, row):
         """Close a row's config dialog and detach its widget before takeItem.
@@ -209,6 +271,8 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
         widget = self.itemWidget(item)
         if widget is None:
             return
+        if item is self.active_timeline_editor_item():
+            self.close_timeline_editor()
         try:
             close = getattr(widget, "close_config_dialog", None)
             if callable(close):
@@ -246,6 +310,7 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
 
     def closeEvent(self, event):
         self._release_viewport_grab()
+        self._reset_scroll_preview_state()
         super().closeEvent(event)
 
     def showEvent(self, event):
@@ -446,7 +511,25 @@ class DraggableListWidget(DragGestureMixin, VirtualizationMixin, QListWidget):
         if getattr(self, "_drag_active", False):
             self.cancel_manual_drag()
         self._release_viewport_grab()
+        self._reset_scroll_preview_state()
         super().hideEvent(event)
+
+    def _reset_scroll_preview_state(self):
+        """关闭/隐藏/切方案时复位滚动拖动状态与预览缓存（无副作用外溢）。
+
+        防止窗口在拖滚动条期间被隐藏后列表卡在拖动分支、永不补齐；同时清理
+        委托只读缓存与补齐定时器，避免失效控件上的延迟回调。
+        """
+        self._slider_dragging = False
+        release_timer = getattr(self, "_virtual_release_timer", None)
+        if release_timer is not None:
+            release_timer.stop()
+        clear = getattr(self, "_clear_scroll_placeholders", None)
+        if callable(clear):
+            clear()
+        delegate = getattr(self, "_preview_delegate", None)
+        if delegate is not None and hasattr(delegate, "invalidate"):
+            delegate.invalidate()
 
     def paintEvent(self, event):
         self._paint_list(event)

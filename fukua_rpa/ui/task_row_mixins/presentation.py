@@ -40,9 +40,10 @@ class TaskRowPresentationMixin:
             button.setToolTip("展开分组" if collapsed else "折叠分组")
             frame.show()
         depth = max(0, min(3, int(presentation.get("depth", 0))))
-        self.controls_widget.setVisible(
-            not bool(presentation.get("controls_hidden", False))
-        )
+        controls_visible = not bool(presentation.get("controls_hidden", False))
+        self.controls_widget.setVisible(controls_visible)
+        if self.timeline_editor is not None:
+            self.timeline_editor.setVisible(controls_visible)
         self.layout.setContentsMargins(8 + depth * 10, 5, 7, 5)
         for name, value in {
             "groupDepth": depth,

@@ -216,6 +216,29 @@ TASK_DATA_DEFAULTS: dict[str, Any] = {
     "recorded_duration": "0",
     # --- 输入时序（类型 29）：相对时间事件流，见 recording_model.recorded_events_to_timeline ---
     "input_events": [],
+    # 原样回放模式标注：仅用于列表显示/语义说明，回放分派只依据 input_events。
+    "playback_mode": "",
+    # --- 原样回放逐条生成（v1.1.16）：录制段内每个普通行的保真执行元数据 ---
+    # 前置间隔（整数毫秒，相对上一行结束；首行相对录制起点）。
+    "pre_delay_ms": "0",
+    # 同一录制段的稳定段 ID；运行期按连续相同 ID 识别同一单调时钟段。
+    "timing_group_id": "",
+    # "raw" 标记本行走保真派发分支（原速、无倍速/自动位移/默认移动）。
+    "fidelity": "",
+    # 滚轮精确 delta（带符号整数字符串，非空优先于 value 的格数）。
+    "raw_delta": "",
+    # 滚轮落点（逻辑坐标，非空时回放前先定位再 scroll）。
+    "wheel_x": "",
+    "wheel_y": "",
+    # 按键动作：tap（默认，走现行逻辑）/ down / repeat / up。
+    "key_action": "",
+    # 点击动作：click（默认）/ down / up；按住时长毫秒。
+    "mouse_action": "",
+    "click_hold_ms": "",
+    # 鼠标轨迹（30.0）：段内相对毫秒与坐标 [[t_ms,x,y],...] 的 JSON 字符串。
+    "trajectory": "",
+    # 拖拽期间保持按下的鼠标按钮（空为无）。
+    "hold_button": "",
     # --- 拖拽终点图片 ---
     "drag_target_img": "",
     "drag_target_point": "",

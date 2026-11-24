@@ -65,6 +65,34 @@ def new_step_id() -> str:
     return uuid.uuid4().hex
 
 
+def _new_timing_group_id() -> str:
+    """Generate a fresh recording-segment identifier for copied rows."""
+    return "seg_" + uuid.uuid4().hex
+
+
+def reassign_timing_group_ids(tasks: list[dict[str, Any]]) -> None:
+    """R1 (维护者 2026-11-22 裁定)：为复制出的录制行分配新的段身份。
+
+    规则：按列表顺序扫描，每个非空 ``timing_group_id`` 的原段映射到一个新的
+    ID；若副本中来自同一原段的行仍相邻，共用一个新 ID，重新遇到不同原段或未
+    知段则另分配。这样复制出的行独立计时，不与原段共享时钟；整组复制保持原
+    节奏，部分复制切断配对时由运行前校验指出问题行并拒绝。
+    """
+    mapping: dict[str, str] = {}
+    last_source: str | None = None
+    last_new: str = ""
+    for task in tasks:
+        source = str(task.get("timing_group_id", "") or "")
+        if not source:
+            last_source = None
+            continue
+        if source != last_source or source not in mapping:
+            mapping[source] = _new_timing_group_id()
+            last_source = source
+        last_new = mapping[source]
+        task["timing_group_id"] = last_new
+
+
 def valid_step_id(value: Any) -> bool:
     """Return True if *value* is a well-formed step ID (8-64 alphanumeric/dash/underscore chars)."""
     return bool(_STEP_ID_RE.fullmatch(str(value or "").strip()))
@@ -161,7 +189,9 @@ def clone_task_for_insert(task: Mapping[str, Any]) -> dict[str, Any]:
             continue
         if old_id and str(cloned.get(target_field, "") or "") == old_id:
             cloned[target_field] = cloned["step_id"]
-    return isolate_editor_group_identities_for_insert([cloned])[0]
+    result = isolate_editor_group_identities_for_insert([cloned])[0]
+    reassign_timing_group_ids([result])
+    return result
 
 
 def clone_tasks_for_insert(
@@ -192,6 +222,7 @@ def clone_tasks_for_insert(
             if target_id in id_map:
                 copied[target_field] = id_map[target_id]
         cloned.append(copied)
+    reassign_timing_group_ids(cloned)
     return cloned
 
 
